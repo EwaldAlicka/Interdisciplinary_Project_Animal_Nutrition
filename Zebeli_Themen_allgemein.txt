@@ -1,0 +1,34 @@
+1)
+
+Image description/recognition
+
+size,form,color,texture description
+
+-> rating 
+
+Maybe as an app take the foto with this contrast or whatever.
+
+Maybe for 2/3 Foods
+
+Farmers,food 
+
+lebeling of data will be done
+different lighting, outside insisede, with fotos
+
+
+2) 
+
+optimizing: 1000 produktute for Supplements, costs so much, needs to fulfil all the nutrions
+but find the cheapest one but also optimizing on nutrions side etc.
+Addetionally exracting data from online pages
+
+lets make it dynamically! because the Excel stuf might Change 
+
+
+
+3) a lot of data 
+
+cow Patient with meassuret micro data (biological)
+
+multivare anylsis, clustering is alread here but Maybe they would also like to know why they are similiar 
+
