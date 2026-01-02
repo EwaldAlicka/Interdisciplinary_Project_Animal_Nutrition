@@ -1,0 +1,19 @@
+19.12 Treffen 
+
+1) 1g als mindest Menge
+2) Tabletten und Pulver werden gleich behandelt 
+3) Empfohlene Dosis kann ignoriert werden 
+4) Habe neues Excel erhalten (Spalten wurden geupdated)
+5) App 
+	a) Fehler falls falsches Format
+	b) #Top 3 Optionen
+	c) #Supplement als Auswahlmöglichkeit
+	d) Option um gewisse Nährwerte zu entfernen bzw die Grenzen zu ändern 
+	   (das sollte nachdem einlesen der Daten passieren)
+	e) Supplemente entfernen aus der optimalen Lösung -> neuer Durchlauf ohne diesen Supplement
+	f) Warnung folgende Nährwerte haben keine constraints bzw vlt alle allgemein anzeigen
+	g) Input muss durchgedacht werden (Erste Version mit der undynamischen Variante) 
+
+
+
+

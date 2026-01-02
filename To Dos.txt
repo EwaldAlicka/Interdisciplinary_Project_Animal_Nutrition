@@ -1,0 +1,51 @@
+To Dos
+
+1) Neue Daten laden
+2) Empfhohlene Dosis aus dem Code auskommentieren
+3)  
+
+
+
+
+
+Ideen // Erster Aufbau 
+
+
+1) Gibt es einen Weg wie ich die Lösung des Algos kontrolliere
+	-> vlt mit ganz wenig Input
+2) Macht es Sinn verschiede Algos zu implementieren
+	-> es müsste an sich das selbe Ergebniss rauskommen
+3) Restrictions
+	3.1) Von allen Nutritions (da vlt schauen wie gut es befüllt ist, falls nicht befüllt dann keine restriction) 
+	3.2) Maximale Dosis (da vlt schauen wie gut es befüllt ist, falls nicht befüllt dann keine restriction) 
+	3.3) Gewichtungsfunktion bzgl anzahl an verschiedenen Medikamenten
+	3.4) Sind die Mengen vergleichbar (€/Kg)? In welchen Mengen würde man dann bestellen
+	
+4) Bonus eine kleiner test mit Open AI oder Ozge web scrapping
+5) Zusammenschreiben was man beim Excel verbessern müsste 
+6) Applikation bauen 
+	Excel input und Excel Output
+	Vlt mit Database, welche die Excel Daten dann speichert
+	Wie soll Interface ausschaue
+		Welche Möglichkeiten soll er haben 
+			Auswahl von Tier und Gewicht
+			Auswahl von Grundnahrungsmitteln 
+			Auswahl von Supplements (2 verschiedene Optionen) (da darf man nicht auf die Ristrektionen vergessen)
+			Dann Wird das Optimierungsproblem basierend auf die Auswahl bestimmt (Ristrektionen nicht vergessen auf 
+											      die Produkte die schon ausgewählt 
+											      wurden)
+			Möglichkeit Produkte auch zu exkludieren (vlt fehlerhafte Info)
+			Entsprechend muss die Excel dann für jeder Kombination von Tier und Gewicht es in einem Format bringen 
+			welches man einlesen kann. So wie er es programmiert hat weiß ich nicht wie ich das einlesen würde
+			das es auf der selbe Seite als Drop Down Option gespeichert wurde.
+
+6 lite) Erste Version der Applikation 
+	6) ohne Auswahl von Produkten (alles schon vorgegeben) und ohne Auswahl an Tieren und Gewicht
+	Optimerungsproblem natürlich basierend nur auf Supplements
+	Dosis Größe definieren 1 Tablette=0,5 g 1 Messlöfel= 2g
+	Nährwerte pro Dosis
+	Kosten pro Dosis
+
+
+
+	
