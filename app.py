@@ -1,6 +1,3 @@
-import time
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pulp
@@ -9,20 +6,115 @@ import streamlit as st
 # ---------------------------
 # Page
 # ---------------------------
-st.set_page_config(page_title="Animal Nutrition Optimizer", layout="wide")
-st.title("🐾 Supplement Optimizer V1")
+st.set_page_config(page_title="Animal Nutrition Optimierer", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    /* Größe/Shape des Buttons */
+    div[data-testid="stButton"] > button {
+        padding: 0.5rem 0.8rem !important;
+        border-radius: 10px !important;
+    }
+
+    /* ALLES im Button groß machen (Text sitzt je nach Streamlit-Version in unterschiedlichen Nodes) */
+    div[data-testid="stButton"] > button * {
+        font-size: 1.5rem !important;
+        font-weight: 800 !important;
+        line-height: 1.1 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+
+col_left, col_right = st.columns([6, 1])
+with col_left:
+    st.title("🐾💊 Animal Supplement Optimierer")
+
+with col_right:
+    st.image("static/Vetmedlogo.png", width='stretch')
+    st.markdown(
+        "<div style='text-align: right;'>Univ.-Prof. Dr. Qendrim Zebeli</div>",
+        unsafe_allow_html=True
+    )
+
 st.write(
-    "Lade die beiden Excel-Dateien hoch, starte die Optimierung und erhalte die günstigste Supplement-Strategie "
-    "unter Einhaltung der Nährstoff-Min/Max-Intervalle."
+    "Lade die beiden Excel-Dateien hoch. Die Dateien werden zuerst in ein Standardformat gebracht "
+    "und anschließend fachlich geprüft."
 )
 
 # ---------------------------
-# Loaders (work with uploaded files OR paths)
+# UI styling (checkbox + titles + inline status)
+# ---------------------------
+st.markdown(
+    """
+    <style>
+    /* Bigger / clearer checkbox */
+    div[data-testid="stCheckbox"] label {
+        font-size: 1.08rem;
+        font-weight: 650;
+        line-height: 1.35;
+    }
+    div[data-testid="stCheckbox"] input {
+        transform: scale(1.45);
+        margin-right: 10px;
+    }
+
+    /* Upload titles */
+    .upload-title {
+        font-size: 1.10rem;
+        font-weight: 750;
+        margin-bottom: 0.1rem;
+    }
+    .muted-hint {
+        color: rgba(49, 51, 63, 0.7);
+        font-size: 0.95rem;
+        margin-top: -0.1rem;
+        margin-bottom: 0.6rem;
+    }
+
+    /* Status line */
+    .statusline {
+        font-size: 1.05rem;
+        font-weight: 650;
+        margin: 0.15rem 0 0.65rem 0;
+    }
+    .statusicon {
+        float: right;
+        font-size: 1.2rem;
+    }
+
+    /* Compact “success row” (green but single line) */
+    .okrow {
+        background: rgba(46, 184, 92, 0.12);
+        border: 1px solid rgba(46, 184, 92, 0.30);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        margin: 0.45rem 0 0.55rem 0;
+        font-weight: 650;
+    }
+    .warnrow {
+        background: rgba(255, 165, 0, 0.12);
+        border: 1px solid rgba(255, 165, 0, 0.30);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        margin: 0.45rem 0 0.55rem 0;
+        font-weight: 650;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ---------------------------
+# 1) Parsing (raw Excel -> canonical DataFrame)
 # ---------------------------
 @st.cache_data
-def load_constraints_excel(path_or_file) -> pd.DataFrame:
-    # Expected format from your VetMed sheet (kept close to your notebook logic)
-    df = pd.read_excel(path_or_file, header=[0, 1], nrows=6)
+def parse_constraints_excel(file) -> pd.DataFrame:
+    df = pd.read_excel(file, header=[0, 1], nrows=6)
 
     df = df.iloc[:, 3:-1]
     df = df.drop(df.index[-3:-1])
@@ -30,22 +122,18 @@ def load_constraints_excel(path_or_file) -> pd.DataFrame:
     df = df.set_index(df.columns[0])
 
     df.index = ["Tagesbedarf", "Maximaler_Wert", "Bedarfsdeck", "Grundnahrung"]
-
-    # MultiIndex columns -> strings
     df.columns = [
         f"{str(col[0]).strip()} {str(col[1]).strip()}" if pd.notna(col[1]) else str(col[0]).strip()
         for col in df.columns
     ]
-
-    # small harmonization
     df = df.rename(columns={"Ca:P Verhältnis": "Ca/P-Verhältnis"})
     return df
 
 
 @st.cache_data
-def load_supplements_excel(path_or_file) -> pd.DataFrame:
-    df_efm = pd.read_excel(path_or_file, sheet_name="EFM", header=2)
-    df_einzel = pd.read_excel(path_or_file, sheet_name="Einzelfuttermittel", header=2)
+def parse_supplements_excel(file) -> pd.DataFrame:
+    df_efm = pd.read_excel(file, sheet_name="EFM", header=2)
+    df_einzel = pd.read_excel(file, sheet_name="Einzelfuttermittel", header=2)
 
     df_einzel = df_einzel.rename(columns={"Taurin [mg]/[100 g]": "Taurin [mg]/[100g]"})
 
@@ -55,35 +143,102 @@ def load_supplements_excel(path_or_file) -> pd.DataFrame:
     df_efm_slim = df_efm.iloc[:, 4:-13]
     df_einzel_slim = df_einzel.iloc[:, 5:-12]
 
-    # align columns
-    d3_new = list(set(df_efm_slim.columns) - set(df_einzel_slim.columns))
-    d2_new = list(set(df_einzel_slim.columns) - set(df_efm_slim.columns))
-    df_einzel_slim[d3_new] = 0
-    df_efm_slim[d2_new] = 0
+    for c in set(df_efm_slim.columns) - set(df_einzel_slim.columns):
+        df_einzel_slim[c] = 0
+    for c in set(df_einzel_slim.columns) - set(df_efm_slim.columns):
+        df_efm_slim[c] = 0
 
     df = pd.concat([df_efm_slim, df_einzel_slim], ignore_index=True)
-
-    # normalize column names: keep up to first ']'
-    cleaned_cols = [s.split("]", 1)[0] + "]" if "]" in s else s for s in list(df.columns)]
-    df.columns = cleaned_cols
+    df.columns = [c.split("]", 1)[0] + "]" if "]" in c else c for c in df.columns]
     return df
 
 
 # ---------------------------
-# Optimization (faster + timings)
+# 2) Validation (canonical DF -> issues)
 # ---------------------------
-def optimize_fast(constraint_df: pd.DataFrame, supp_df: pd.DataFrame, debug=False, time_limit=None):
-    t0 = time.perf_counter()
+def validate_constraints_df(constraints: pd.DataFrame):
+    issues = []
 
-    # shared nutrients
-    relevant = list(set(constraint_df.columns).intersection(set(supp_df.columns)))
+    required_rows = {"Tagesbedarf", "Maximaler_Wert", "Grundnahrung"}
+    if not required_rows.issubset(set(constraints.index)):
+        issues.append("Pflichtzeilen fehlen nach Parsing (Tagesbedarf/Maximaler_Wert/Grundnahrung).")
+
+    if constraints.shape[1] == 0:
+        issues.append("Keine Nährstoffspalten erkannt (nach Parsing).")
+
+    if constraints.isna().any().any():
+        issues.append("NaN-Werte nach Parsing vorhanden.")
+
+    try:
+        min_vals = pd.to_numeric(constraints.loc["Tagesbedarf"], errors="coerce")
+        max_vals = pd.to_numeric(constraints.loc["Maximaler_Wert"], errors="coerce")
+        base_vals = pd.to_numeric(constraints.loc["Grundnahrung"], errors="coerce")
+
+        if min_vals.isna().any() or max_vals.isna().any() or base_vals.isna().any():
+            issues.append("Nicht-numerische Werte in Tagesbedarf/Maximaler_Wert/Grundnahrung.")
+
+        if (min_vals < 0).any():
+            issues.append("Negative Bedarfswerte gefunden.")
+
+        if (min_vals > max_vals).any():
+            issues.append("Tagesbedarf > Maximalwert bei mindestens einem Nährstoff.")
+    except Exception:
+        issues.append("Werte konnten nicht numerisch interpretiert werden.")
+
+    return issues
+
+
+def validate_supplements_df(supplements: pd.DataFrame):
+    issues = []
+
+    required_cols = {"Futtermittel", "Preis (€) pro kg"}
+    missing = required_cols - set(supplements.columns)
+    if missing:
+        issues.append(f"Pflichtspalten fehlen nach Parsing: {', '.join(sorted(missing))}.")
+
+    if supplements.shape[0] == 0:
+        issues.append("Keine Zeilen erkannt (nach Parsing).")
+
+    if "Preis (€) pro kg" in supplements.columns:
+        prices = pd.to_numeric(supplements["Preis (€) pro kg"], errors="coerce")
+        if prices.isna().any():
+            issues.append("Nicht-numerische/fehlende Preise gefunden (diese Zeilen können ignoriert werden).")
+        if (prices < 0).any():
+            issues.append("Negative Preise gefunden.")
+
+    return issues
+
+
+# ---------------------------
+# 2b) Excluded supplements report
+# ---------------------------
+def get_excluded_supplements(supplements: pd.DataFrame) -> pd.DataFrame:
+    if "Preis (€) pro kg" not in supplements.columns or "Futtermittel" not in supplements.columns:
+        return pd.DataFrame(columns=["Excel-Zeile", "Futtermittel", "Preis (€) pro kg", "Ausschlussgrund"])
+
+    df = supplements.copy()
+    df["_Excel_Zeile"] = df.index + 2  # approximate row hint
+
+    prices = pd.to_numeric(df["Preis (€) pro kg"], errors="coerce")
+    mask_no_price = prices.isna()
+
+    excluded = df.loc[mask_no_price, ["_Excel_Zeile", "Futtermittel", "Preis (€) pro kg"]].copy()
+    excluded["Ausschlussgrund"] = "Kein gültiger Preis angegeben"
+    excluded = excluded.rename(columns={"_Excel_Zeile": "Excel-Zeile"})
+    excluded = excluded.sort_values(by=["Excel-Zeile", "Futtermittel"], ascending=True)
+    return excluded
+
+
+# ---------------------------
+# 3) Optimization
+# ---------------------------
+def optimize_fast(constraints: pd.DataFrame, supplements: pd.DataFrame):
+    relevant = list(set(constraints.columns).intersection(set(supplements.columns)))
     nutrient_cols = [c for c in relevant if "Verhältnis" not in c]
 
-    # constraints
-    fc = constraint_df[nutrient_cols]
-    base = pd.to_numeric(fc.loc["Grundnahrung"], errors="coerce").fillna(0.0)
-    min_req = pd.to_numeric(fc.loc["Tagesbedarf"], errors="coerce").fillna(0.0)
-    max_req = pd.to_numeric(fc.loc["Maximaler_Wert"], errors="coerce")
+    base = pd.to_numeric(constraints.loc["Grundnahrung", nutrient_cols], errors="coerce").fillna(0.0)
+    min_req = pd.to_numeric(constraints.loc["Tagesbedarf", nutrient_cols], errors="coerce").fillna(0.0)
+    max_req = pd.to_numeric(constraints.loc["Maximaler_Wert", nutrient_cols], errors="coerce")
 
     min_supp = (min_req - base).clip(lower=0.0)
     max_supp = (max_req - base)
@@ -91,184 +246,209 @@ def optimize_fast(constraint_df: pd.DataFrame, supp_df: pd.DataFrame, debug=Fals
     infeasible = max_supp[max_supp < 0]
     infeasible_msg = infeasible.to_dict() if len(infeasible) else None
 
-    t1 = time.perf_counter()
-
-    # supplements prep
-    if "Preis (€) pro kg" not in supp_df.columns:
-        raise ValueError("In der Supplement-Datei fehlt: 'Preis (€) pro kg'")
-    if "Futtermittel" not in supp_df.columns:
-        raise ValueError("In der Supplement-Datei fehlt: 'Futtermittel'")
-
-    supp = supp_df.dropna(subset=["Preis (€) pro kg", "Futtermittel"]).copy()
+    # Exclude missing/non-numeric prices + missing names
+    supp = supplements.dropna(subset=["Preis (€) pro kg", "Futtermittel"]).copy()
     supp["Preis (€) pro kg"] = pd.to_numeric(supp["Preis (€) pro kg"], errors="coerce")
     supp = supp.dropna(subset=["Preis (€) pro kg"])
 
-    supp[nutrient_cols] = (
-        supp[nutrient_cols]
-        .apply(pd.to_numeric, errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-    )
+    for c in nutrient_cols:
+        supp[c] = pd.to_numeric(supp.get(c, 0), errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     supp = supp.set_index("Futtermittel")
+    supp = supp[supp[nutrient_cols].abs().sum(axis=1) > 0]
 
-    # SPEED-UP: remove supplements that contribute nothing to any nutrient
-    nonzero_mask = (supp[nutrient_cols].abs().sum(axis=1) > 0)
-    supp = supp.loc[nonzero_mask]
+    if supp.shape[0] == 0:
+        return "Infeasible", None, None, infeasible_msg
 
-    costs = supp["Preis (€) pro kg"].copy()
-    comp = supp[nutrient_cols].copy()
-
-    if comp.shape[0] == 0:
-        raise ValueError("Nach Filterung hat kein Supplement relevante Nährstoffe (alles 0).")
-
-    t2 = time.perf_counter()
-
-    # LP model
     model = pulp.LpProblem("Supplement_Optimierung", pulp.LpMinimize)
-    names = list(comp.index)
+    x = {s: pulp.LpVariable(s, lowBound=0) for s in supp.index}
 
-    x = {s: pulp.LpVariable(f"x_{i}", lowBound=0) for i, s in enumerate(names)}
-    model += pulp.lpSum(costs[s] * x[s] for s in names)
+    model += pulp.lpSum(supp.loc[s, "Preis (€) pro kg"] * x[s] for s in supp.index)
 
-    comp_np = comp.to_numpy(dtype=float)
-    min_np = min_supp.to_numpy(dtype=float)
-    max_np = max_supp.to_numpy(dtype=float)
+    for n in nutrient_cols:
+        intake = pulp.lpSum(supp.loc[s, n] * x[s] for s in supp.index)
+        if min_supp[n] > 0:
+            model += intake >= float(min_supp[n])
+        if pd.notna(max_supp[n]):
+            model += intake <= float(max_supp[n])
 
-    for j, nutr in enumerate(nutrient_cols):
-        intake = pulp.lpSum(comp_np[i, j] * x[names[i]] for i in range(len(names)))
-        if min_np[j] > 0:
-            model += intake >= float(min_np[j]), f"{nutr}_min"
-        if pd.notna(max_np[j]):
-            model += intake <= float(max_np[j]), f"{nutr}_max"
-
-    t3 = time.perf_counter()
-
-    solver = pulp.PULP_CBC_CMD(
-        msg=debug,
-        threads=0,
-        timeLimit=time_limit
-    )
-    model.solve(solver)
-
-    t4 = time.perf_counter()
+    model.solve(pulp.PULP_CBC_CMD(msg=False))
 
     status = pulp.LpStatus[model.status]
-    timings = {
-        "prep_constraints_s": round(t1 - t0, 4),
-        "prep_supplements_s": round(t2 - t1, 4),
-        "build_model_s": round(t3 - t2, 4),
-        "solve_s": round(t4 - t3, 4),
-        "total_s": round(t4 - t0, 4),
-        "n_supplements": int(len(names)),
-        "n_nutrients": int(len(nutrient_cols)),
-    }
-
     if status != "Optimal":
-        return status, None, None, None, infeasible_msg, timings
+        return status, None, None, infeasible_msg
 
-    sol = pd.Series({s: x[s].varValue for s in names}, name="Menge").fillna(0.0)
-    sol = sol[sol > 1e-9].sort_values(ascending=False)
-    total_cost = float(pulp.value(model.objective))
+    solution = pd.Series({s: x[s].value() for s in x if (x[s].value() or 0) > 1e-9}).sort_values(ascending=False)
+    cost = float(pulp.value(model.objective))
 
-    # Report (vectorized)
-    x_vec = np.array([x[s].varValue or 0.0 for s in names], dtype=float)
-    supp_intake = pd.Series(comp_np.T @ x_vec, index=nutrient_cols)
-    total_intake = base + supp_intake
-
-    report = pd.DataFrame({
-        "Grundnahrung": base,
-        "Supplemente": supp_intake,
-        "Gesamt": total_intake,
-        "Min_Bedarf": min_req,
-        "Max_Wert": max_req,
-    })
-
-    return status, sol, total_cost, report, infeasible_msg, timings
+    return status, solution, cost, infeasible_msg
 
 
 # ---------------------------
-# UI: Upload (drag & drop)
+# UI – Upload section with dropdowns + status inside dropdown
 # ---------------------------
-st.subheader("📥 Dateien hochladen")
+st.markdown("### 📥 Dateien hochladen")
 
-col1, col2 = st.columns(2)
-with col1:
-    ration_file = st.file_uploader(
-        "Ration-Datei (z.B. Ration Katze.xlsx)",
-        type=["xlsx"],
-        accept_multiple_files=False
-    )
+constraints = None
+supplements = None
 
-with col2:
-    supp_file = st.file_uploader(
-        "Supplement-Datenbank (Database Supplemente.xlsx)",
-        type=["xlsx"],
-        accept_multiple_files=False
-    )
+ration_ok = False
+supp_ok = False
+excluded_supps_table = pd.DataFrame()
 
-# if ration_file:
-#     st.caption(f"Ration geladen: **{ration_file.name}**")
-# if supp_file:
-#     st.caption(f"Supplements geladen: **{supp_file.name}**")
+with st.expander("Dateien hochladen (aufklappen)", expanded=True):
+    # Status line INSIDE the upload dropdown (as requested)
+    overall_status_ok = ration_ok and supp_ok
+    overall_icon = "✅" if overall_status_ok else "⏳"
 
-# with st.expander("⚙️ Debug / Performance", expanded=False):
-#     debug = st.checkbox("Debug-Ausgaben vom Solver (CBC msg)", value=False)
-#     show_timings = st.checkbox("Zeige Timings", value=True)
-#     time_limit = st.number_input(
-#         "Optional: Solver Time Limit (Sekunden, 0 = unbegrenzt)",
-#         min_value=0, value=0, step=5
-#     )
+    left, right = st.columns(2)
+
+    # -------- LEFT: Rationsdatei --------
+    with left:
+        with st.expander("Rationsdatei", expanded=True):
+            #ration_icon = "✅" if ration_ok else "⏳"
+
+            st.markdown(f"""<div class='upload-title'>Rationsdatei<span style="float:right; font-size:1.2rem;"></span></div>""",unsafe_allow_html=True)           
+        
+            st.markdown("<div class='muted-hint'>(z.B. Ration Katze.xlsx)</div>", unsafe_allow_html=True)
+
+            ration_file = st.file_uploader(
+                "Rationsdatei Upload",
+                type="xlsx",
+                label_visibility="collapsed"
+            )
+
+            if ration_file:
+                #st.markdown("**Rationsdatei prüfen…**")
+                try:
+                    constraints = parse_constraints_excel(ration_file)
+                    issues = validate_constraints_df(constraints)
+                    if issues:
+                        warning_text = (
+                            "⚠️ **Warnung! Das Format scheint nicht zu passen:**\n\n"
+                            + "\n".join(f"- {msg}" for msg in issues)
+                        )
+                        st.warning(warning_text)
+                        ration_ok = False
+                    else:
+                        ration_ok = True
+                        st.markdown(
+                            "<div class='okrow'>✅ Format passt! </div>",
+                            unsafe_allow_html=True
+                        )
+
+                except Exception as e:
+                    st.error("❌ Excel-Format konnte nicht geparst werden.")
+                    st.caption(f"Technischer Hinweis: {e}")
+                    ration_ok = False
+
+
+    # -------- RIGHT: Supplementdatenbank --------
+    with right:
+        with st.expander("Supplementdatenbank", expanded=True):
+            st.markdown("<div class='upload-title'>Supplementdatenbank</div>", unsafe_allow_html=True)
+            st.markdown("<div class='muted-hint'>(z.B. Database Supplemente.xlsx)</div>", unsafe_allow_html=True)
+
+            supp_file = st.file_uploader(
+                "Supplementdatenbank Upload",
+                type="xlsx",
+                label_visibility="collapsed"
+            )
+
+            proceed_without_incomplete = False
+
+            if supp_file:
+                try:
+                    supplements = parse_supplements_excel(supp_file)
+                    issues = validate_supplements_df(supplements)
+
+                    excluded_supps_table = get_excluded_supplements(supplements)
+
+                    if issues:
+                        warning_text = (
+                            "⚠️ **Warnung! Das Format scheint nicht zu passen:**\n\n"
+                            + "\n".join(f"- {msg}" for msg in issues)
+                        )
+                        st.warning(warning_text)
+
+                    if not excluded_supps_table.empty:
+                        st.info(
+                            f"{len(excluded_supps_table)} Supplements haben keinen gültigen Preis "
+                            "und werden automatisch ausgeschlossen."
+                        )
+                        st.dataframe(excluded_supps_table, use_container_width=True)
+
+                        proceed_without_incomplete = st.checkbox(
+                            "Ich möchte ohne den unvollständigen Supplements fortfahren.",
+                            value=False
+                        )
+
+                    supp_ok = (supplements is not None) and (proceed_without_incomplete or excluded_supps_table.empty)
+
+                    if supp_ok and supplements is not None:
+                        st.markdown(
+                            "<div class='okrow'>✅ Format passt!</div>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            "<div class='warnrow'>⏳ Hinweis: Kästchen drüber anklicken um unvollständige Supplemente zu ignorieren</div>",
+                            unsafe_allow_html=True
+                        )
+
+                except Exception as e:
+                    st.error("❌ Excel-Format konnte nicht gelesen werden.")
+                    st.caption(f"Technischer Hinweis: {e}")
+                    supp_ok = False
+
+# ---------------------------
+# Overall status (single line, outside dropdown too)
+# ---------------------------
+    status_ok = ration_ok and supp_ok
+    status_icon = "✅" if status_ok else "⏳"
+    st.markdown(
+        f"""
+        <div class='statusline' style='font-size:1.8rem;'>
+            Datenformat
+            <span style='font-size:1.8rem; margin-left:0.2rem;'>{status_icon}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+)
 
 st.divider()
 
 # ---------------------------
-# Run optimization
+# Run optimization (only if both OK)
 # ---------------------------
-run_disabled = (ration_file is None) or (supp_file is None)
-if st.button("✅ OK, let's go", disabled=run_disabled):
-    tl = None if time_limit == 0 else int(time_limit)
+can_run = status_ok and constraints is not None and supplements is not None
 
-    status_box = st.status("Starte...", expanded=True)
-    try:
-        status_box.update(label="1/3 Lade Ration-Excel…")
-        constraints = load_constraints_excel(ration_file)
+st.markdown("### 📈 Optimierung")
 
-        status_box.update(label="2/3 Lade Supplements-Excel…")
-        supplements = load_supplements_excel(supp_file)
+with st.expander("Dateien hochladen (aufklappen)", expanded=True):
 
-        status_box.update(label="3/3 Optimiere… (Solver läuft)")
-        status, sol, cost, report, infeasible_msg, timings = optimize_fast(
-            constraints, supplements, debug=debug, time_limit=tl
-        )
+    if st.button("🚀 Optimierung starten", disabled=not can_run):
+        status_box = st.status("Starte Optimierung…", expanded=True)
+        try:
+            status_box.update(label="Optimiere… (Solver läuft)")
+            status, solution, cost, infeasible_msg = optimize_fast(constraints, supplements)
+            status_box.update(label="Fertig.", state="complete")
+        except Exception as e:
+            status_box.update(label="Fehler", state="error")
+            st.exception(e)
+            st.stop()
 
-        status_box.update(label="Fertig.", state="complete")
+        st.subheader("Ergebnis")
+        st.write(f"**Solver-Status:** {status}")
 
-    except Exception as e:
-        status_box.update(label="Fehler", state="error")
-        st.exception(e)
-        st.stop()
+        if infeasible_msg:
+            st.warning("Achtung: Grundnahrung überschreitet bereits den Maximalwert bei einigen Nährstoffen.")
+            st.json(infeasible_msg)
 
-    st.subheader("Ergebnis")
-    st.write(f"**Solver-Status:** {status}")
+        if status != "Optimal" or solution is None:
+            st.error("Keine optimale Lösung gefunden. Prüfe Datenformat / Constraints / Einheiten.")
+            st.stop()
 
-    if show_timings:
-        st.info(f"Timings: {timings}")
-
-    if infeasible_msg:
-        st.warning("Achtung: Grundnahrung überschreitet bereits Max bei einigen Nährstoffen.")
-        st.json(infeasible_msg)
-
-    if status != "Optimal":
-        st.error("Keine optimale Lösung gefunden. Prüfe Datenformat / Constraints / Einheiten.")
-        st.stop()
-
-    st.success(f"**Minimale Kosten:** {cost:.4f} €")
-
-    st.subheader("Optimale Supplement-Mengen")
-    st.dataframe(sol.to_frame(), use_container_width=True)
-
-    st.subheader("Nährstoff-Bilanz")
-    st.dataframe(report.round(4), use_container_width=True)
-
-# st.caption("Basic v1 – nächste Schritte: Auswahl Tier/Weight-Group, Einheiten/Skalierung, Penalty für Anzahl Supplements.")
+        st.success(f"💰 **Minimale Kosten:** {cost:.4f} €")
+        st.subheader("Optimale Supplement-Mengen")
+        st.dataframe(solution.to_frame("Menge"), use_container_width=True)
