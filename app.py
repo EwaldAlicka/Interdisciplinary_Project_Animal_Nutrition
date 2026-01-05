@@ -16,6 +16,8 @@
 import numpy as np
 import numpy as np
 import numpy as np
+import numpy as np
+#äääää
 import pandas as pd
 import pulp
 import streamlit as stimport 
