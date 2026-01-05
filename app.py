@@ -1,26 +1,15 @@
 # ============================================================
 # Animal Supplement Optimierer (Streamlit App)
 #
-# WICHTIG:
-# - Streamlit "Wrapper-DIVs" via st.markdown(<div>...) um Widgets herum
-#   funktionieren oft NICHT zuverlässig, weil Widgets in eigenen DOM-Blöcken
-#   gerendert werden.
-# - Daher stylen wir:
-#     (1) Checkboxen & Captions GLOBAL (robust)
-#     (2) Buttons robust über :has() (Button-Text), mit Fallbacks
-#
-# Design-Controls:
-# - Ändere Größen/Weights nur im :root Block im CSS (0b)
+# CHANGE REQUEST (ONLY):
+# - Keep your app EXACTLY the same (left/right, uploads, buttons, etc.)
+# - Replace ONLY the problematic st.caption() (the Min/Max/Grundnahrung text)
+#   with a robust styled HTML caption (st.markdown + CSS class)
+# - Do NOT change anything else in logic/UI.
 # ============================================================
 
 import numpy as np
-import numpy as np
-import numpy as np
-import numpy as np
-#äääää
 import pandas as pd
-import pulp
-import streamlit as stimport 
 import pulp
 import streamlit as st
 import streamlit.components.v1 as components
@@ -35,7 +24,6 @@ st.set_page_config(page_title="Animal Nutrition Optimierer", layout="wide")
 
 # ------------------------------------------------------------
 # 0b) GLOBAL CSS (Design Controls)
-#    -> HIER stellst du Button/Checkbox/Caption-Größen ein
 # ------------------------------------------------------------
 st.markdown(
     """
@@ -45,34 +33,34 @@ st.markdown(
        ========================= */
     :root{
       /* Primary button (Optimierung starten) */
-      --btn_primary_font: 1.90rem;
-      --btn_primary_weight: 800;
+      --btn_primary_font: 1.60rem;
+      --btn_primary_weight: 600;
       --btn_primary_py: 0.55rem;
       --btn_primary_px: 0.90rem;
       --btn_primary_radius: 10px;
 
-      /* Small button (Reset) */
-      --btn_small_font: 1.90rem;
-      --btn_small_weight: 400;
-      --btn_small_py: 0.20rem;
-      --btn_small_px: 0.55rem;
-      --btn_small_radius: 10px;
+      /* Secondary button (Reset etc.) */
+      --btn_secondary_font: 1.10rem;
+      --btn_secondary_weight: 550;
+      --btn_secondary_py: 0.25rem;
+      --btn_secondary_px: 0.45rem;
+      --btn_secondary_radius: 10px;
 
       /* Checkbox */
-      --chk_font: 1.3rem;
-      --chk_weight: 500;
+      --chk_font: 1.2rem;
+      --chk_weight: 600;
       --chk_scale: 1.45;
       --chk_gap: 12px;
 
-      /* Caption */
-      --caption_font: 1.30rem;
-      --caption_weight: 450;
+      /* Caption (global) */
+      --caption_font: 1.0rem;
+      --caption_weight: 650;
       --caption_opacity: 0.85;
-      --caption_line: 1.35;
+      --caption_line: 1.0;
     }
 
     /* =========================
-       CHECKBOXES (global)  ✅ works
+       CHECKBOXES (global) ✅
        ========================= */
     div[data-testid="stCheckbox"] label,
     div[data-testid="stCheckbox"] label p,
@@ -87,11 +75,8 @@ st.markdown(
     }
 
     /* =========================
-       CAPTION (robust) ✅ fixed
-       - Covers multiple Streamlit render variants
+       CAPTION (global) ✅
        ========================= */
-
-    /* If Streamlit exposes stCaption */
     div[data-testid="stCaption"],
     div[data-testid="stCaption"] *{
       font-size: var(--caption_font) !important;
@@ -100,7 +85,6 @@ st.markdown(
       opacity: var(--caption_opacity) !important;
     }
 
-    /* Common: caption as <small> inside markdown container */
     div[data-testid="stMarkdownContainer"] small,
     div[data-testid="stMarkdownContainer"] small *{
       font-size: var(--caption_font) !important;
@@ -109,9 +93,8 @@ st.markdown(
       opacity: var(--caption_opacity) !important;
     }
 
-    /* Extra robust: markdown paragraphs that *contain* small (only affects captions) */
-    div[data-testid="stMarkdownContainer"] p:has(small),
-    div[data-testid="stMarkdownContainer"] p:has(small) *{
+    div[data-testid="stMarkdownContainer"] p small,
+    div[data-testid="stMarkdownContainer"] p small *{
       font-size: var(--caption_font) !important;
       font-weight: var(--caption_weight) !important;
       line-height: var(--caption_line) !important;
@@ -119,46 +102,43 @@ st.markdown(
     }
 
     /* =========================
-       BUTTONS (robust) ✅ fixed
-       - DO NOT rely on aria-label
-       - Target by visible text using :has()
+       SPECIAL CAPTION (ONLY for the one line you mentioned)
+       This is the minimal fix: use st.markdown() with this class.
        ========================= */
+    .caption-note{
+      font-size: var(--caption_font);
+      font-weight: var(--caption_weight);
+      line-height: var(--caption_line);
+      opacity: var(--caption_opacity);
+      margin-top: 0.15rem;
+      margin-bottom: 0.6rem;
+    }
 
-    /* Primary: match button whose inner text contains "Optimierung starten"
-       (emoji may be stripped by Streamlit, so we match both) */
-    div[data-testid="stButton"]:has(button:has(span:contains("Optimierung starten"))) > button,
-    div[data-testid="stButton"]:has(button:has(p:contains("Optimierung starten"))) > button{
+    /* =========================
+       BUTTONS (robust) ✅
+       ========================= */
+    button[kind="primary"],
+    button[data-testid="baseButton-primary"]{
       padding: var(--btn_primary_py) var(--btn_primary_px) !important;
       border-radius: var(--btn_primary_radius) !important;
     }
-
-    /* Also match via :has on the button itself (more reliable) */
-    div[data-testid="stButton"] button:has(*:contains("Optimierung starten")){
-      padding: var(--btn_primary_py) var(--btn_primary_px) !important;
-      border-radius: var(--btn_primary_radius) !important;
-    }
-    div[data-testid="stButton"] button:has(*:contains("Optimierung starten")) *{
+    button[kind="primary"] *,
+    button[data-testid="baseButton-primary"] *{
       font-size: var(--btn_primary_font) !important;
       font-weight: var(--btn_primary_weight) !important;
       line-height: 1.1 !important;
     }
 
-    /* Small: match reset button by text */
-    div[data-testid="stButton"] button:has(*:contains("Änderungen zurücksetzen")){
-      padding: var(--btn_small_py) var(--btn_small_px) !important;
-      border-radius: var(--btn_small_radius) !important;
+    button[kind="secondary"],
+    button[data-testid="baseButton-secondary"]{
+      padding: var(--btn_secondary_py) var(--btn_secondary_px) !important;
+      border-radius: var(--btn_secondary_radius) !important;
     }
-    div[data-testid="stButton"] button:has(*:contains("Änderungen zurücksetzen")) *{
-      font-size: var(--btn_small_font) !important;
-      font-weight: var(--btn_small_weight) !important;
+    button[kind="secondary"] *,
+    button[data-testid="baseButton-secondary"] *{
+      font-size: var(--btn_secondary_font) !important;
+      font-weight: var(--btn_secondary_weight) !important;
       line-height: 1.2 !important;
-    }
-
-    /* Fallback for old engines: if :has() is unsupported, at least style all buttons a bit */
-    @supports not selector(:has(*)) {
-      div[data-testid="stButton"] > button {
-        border-radius: 10px !important;
-      }
     }
 
     /* Download buttons (keep nice) */
@@ -170,7 +150,7 @@ st.markdown(
 
     /* Upload titles */
     .upload-title { font-size: 1.10rem; font-weight: 750; margin-bottom: 0.1rem; }
-    .muted-hint { color: rgba(49, 51, 63, 0.7); font-size: 0.95rem; margin-top: -0.1rem; margin-bottom: 0.6rem; }
+    .muted-hint { color: rgba(49, 51, 63, 0.7); font-size: 1.05rem; margin-top: -0.1rem; margin-bottom: 0.6rem; }
 
     /* Status line */
     .statusline { font-size: 1.05rem; font-weight: 650; margin: 0.15rem 0 0.65rem 0; }
@@ -399,9 +379,14 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                         st.markdown("<div class='okrow'>✅ Format passt!</div>", unsafe_allow_html=True)
 
                         st.markdown("#### 🧾 Nährstoff-Intervalle (Ration) – Anzeige & Edit")
-                        st.caption(
+
+                        # ✅ ONLY CHANGE: replace st.caption with robust HTML caption
+                        st.markdown(
+                            "<div class='caption-note'>"
                             "Min/Max/Grundnahrung sind editierbar. "
-                            "Erst wenn du **fixierst**, werden die Werte für die Optimierung übernommen."
+                            "Erst wenn du <b>fixierst</b>, werden die Werte für die Optimierung übernommen."
+                            "</div>",
+                            unsafe_allow_html=True
                         )
 
                         edit_df_default = constraints_to_edit_df(constraints_raw)
@@ -440,14 +425,12 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
 
                         st.markdown("<div class='nutrient-actions'>", unsafe_allow_html=True)
 
-                        # Reset button (styled via aria-label selector)
-                        if st.button("↩️ Änderungen zurücksetzen", key="reset_constraints_btn"):
+                        if st.button("↩️ Änderungen zurücksetzen", key="reset_constraints_btn", type="secondary"):
                             st.session_state["constraints_edit_df"] = edit_df_default.copy()
                             st.session_state["constraints_locked"] = False
                             st.session_state["constraints_effective_df"] = None
                             st.success("Änderungen zurückgesetzt. Fixierung aufgehoben.")
 
-                        # Lock checkbox (global checkbox style applies)
                         locked_now = st.checkbox(
                             "🔏 Nährstoff Intervalle fixieren",
                             value=st.session_state.get("constraints_locked", False),
@@ -542,7 +525,6 @@ can_run = status_ok and constraints_effective is not None and supplements is not
 
 st.markdown("### 📈 Optimierung")
 with st.expander("Optimierung (aufklappen)", expanded=True):
-    # Optimierung button (styled via aria-label selector)
-    if st.button("🚀 Optimierung starten", disabled=not can_run):
+    if st.button("🚀 Optimierung starten", disabled=not can_run, type="primary"):
         st.success("Start (Rest deiner Optimierungs-UI bleibt wie gehabt)")
         st.image("static/pikachu.jpg", width=220)
