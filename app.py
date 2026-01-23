@@ -2,13 +2,13 @@
 # Animal Supplement Optimierer (Streamlit App)
 #
 # Update (this turn):
-# - "⚠️ Fehler" Spalte NICHT mehr dauerhaft in der Haupt-Tabelle anzeigen.
-# - Validierung bleibt aktiv (Min > Max, Grundnahrung > Max).
-# - Detail-Ansicht zeigt weiterhin alle Spalten inkl. "⚠️ Fehler".
-# - Fixieren ist NICHT möglich, solange Fehler vorhanden sind.
-#
-# Hinweis:
-# Streamlit data_editor kann Rows nicht zuverlässig "rot einfärben" (conditional row styling).
+# - Text am Ende entfernt: "In die Optimierung gehen diese Nährstoffe (gematchte Supplement-Spalten)..."
+# - Text angepasst: "✅ Matching ok – Optimierung kann starten." (ohne Klammer)
+# - Nach Skip-Warnung zusätzlicher Abstand eingefügt
+# - Logik-Fix: "Matching ok" wird nur angezeigt wenn
+#   (a) alle benötigten Nährstoffe zugeordnet sind ODER
+#   (b) Skip aktiv ist (dann dürfen benötigte fehlen)
+#   -> beim Zurückschalten von Skip wird korrekt neu geprüft
 # ============================================================
 
 import numpy as np
@@ -19,6 +19,8 @@ import streamlit.components.v1 as components
 import io
 import matplotlib.pyplot as plt
 import re
+import difflib
+import unicodedata
 
 # ------------------------------------------------------------
 # 0) PAGE CONFIG
@@ -338,7 +340,7 @@ def edit_df_to_constraints(edit_df: pd.DataFrame, original_constraints: pd.DataF
     return out
 
 # ------------------------------------------------------------
-# 5b) Helpers + Optimization (minimal needed)
+# 5b) Helpers + Optimization
 # ------------------------------------------------------------
 def canonical_name(col: str) -> str:
     return str(col).split("/", 1)[0].strip()
@@ -461,9 +463,74 @@ def optimize_fast(constraints_effective: pd.DataFrame, supplements: pd.DataFrame
     return status, solution, cost, infeasible_msg, debug
 
 # ------------------------------------------------------------
+# 5c) Matching helpers
+# ------------------------------------------------------------
+def normalize_name(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[^\w\s\[\]\(\)\-\/\+\.]", "", s)
+    return s.strip()
+
+def build_initial_mapping_and_status(ration_nutrients: list[str], supp_names: list[str]):
+    """
+    Returns:
+      mapping: dict[ration] -> supp_name or None
+      status: dict[ration] -> "exact" | "fuzzy" | "missing"
+      mode:   dict[ration] -> "auto"
+    """
+    supp_norm_map = {normalize_name(s): s for s in supp_names}
+    mapping = {}
+    status = {}
+    mode = {}
+
+    for r in ration_nutrients:
+        rn = normalize_name(r)
+        if rn in supp_norm_map:
+            mapping[r] = supp_norm_map[rn]
+            status[r] = "exact"
+            mode[r] = "auto"
+        else:
+            norm_list = list(supp_norm_map.keys())
+            close = difflib.get_close_matches(rn, norm_list, n=1, cutoff=0.78)
+            if close:
+                mapping[r] = supp_norm_map[close[0]]
+                status[r] = "fuzzy"
+                mode[r] = "auto"
+            else:
+                mapping[r] = None
+                status[r] = "missing"
+                mode[r] = "auto"
+    return mapping, status, mode
+
+def apply_mapping_to_constraints(constraints_effective: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    cols = list(constraints_effective.columns)
+    rename_map = {}
+    keep_cols = []
+    for c in cols:
+        if c in mapping:
+            target = mapping.get(c)
+            if target is None:
+                continue
+            rename_map[c] = target
+            keep_cols.append(c)
+        else:
+            keep_cols.append(c)
+
+    out = constraints_effective[keep_cols].copy()
+    out = out.rename(columns=rename_map)
+
+    if out.columns.duplicated().any():
+        out = out.groupby(level=0, axis=1).max()
+
+    return out
+
+# ------------------------------------------------------------
 # 6) UI – UPLOAD SECTION
 # ------------------------------------------------------------
-st.markdown("### 📥 Dateien hochladen")
+st.markdown("### 📥 Daten hochladen & anpassen")
 
 constraints_raw = None
 constraints_effective = None
@@ -473,7 +540,9 @@ ration_ok = False
 supp_ok = False
 excluded_supps_table = pd.DataFrame()
 
-with st.expander("Dateien hochladen (aufklappen)", expanded=True):
+status_ok = False
+
+with st.expander("📥 Dateien hochladen & anpassen (aufklappen)", expanded=True):
     left, right = st.columns(2)
 
     # ----------------------------
@@ -526,10 +595,15 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                             st.session_state["constraints_effective_df"] = None
                             st.session_state["constraints_editor_nonce"] += 1
 
+                            st.session_state["nutrient_mapping"] = None
+                            st.session_state["nutrient_mapping_status"] = None
+                            st.session_state["nutrient_mapping_mode"] = None
+                            st.session_state["nutrient_mapping_signature"] = None
+                            st.session_state["skip_missing_nutrients"] = False
+
                         locked = bool(st.session_state.get("constraints_locked", False))
                         editor_key = f"constraints_editor_{st.session_state['constraints_editor_nonce']}"
 
-                        # show editor WITHOUT the error column
                         display_cols = [
                             "Nährstoff",
                             "Tagesbedarf (Min)",
@@ -555,12 +629,10 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                             },
                         )
 
-                        # merge edits back into full df (keeps potential internal columns if later needed)
                         edited = st.session_state["constraints_edit_df"].copy()
                         for c in display_cols:
                             edited[c] = edited_display[c]
 
-                        # --- sanitize
                         edited["Nährstoff"] = edited["Nährstoff"].astype(str).str.strip()
                         edited["Tagesbedarf (Min)"] = pd.to_numeric(edited["Tagesbedarf (Min)"], errors="coerce").fillna(0.0)
                         edited["Grundnahrung"] = pd.to_numeric(edited["Grundnahrung"], errors="coerce").fillna(0.0)
@@ -568,7 +640,6 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                         edited["Bedarf nach Grundnahrung (Min-Base)"] = (edited["Tagesbedarf (Min)"] - edited["Grundnahrung"]).clip(lower=0.0)
                         edited["🗑 Löschen"] = edited.get("🗑 Löschen", False).fillna(False).astype(bool)
 
-                        # --- validation
                         max_present = edited["Maximalwert (Max)"].notna()
                         err_min_gt_max = max_present & (edited["Tagesbedarf (Min)"] > edited["Maximalwert (Max)"])
                         err_base_gt_max = max_present & (edited["Grundnahrung"] > edited["Maximalwert (Max)"])
@@ -581,9 +652,7 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                                 parts.append("Grundnahrung > Max")
                             return " | ".join(parts)
 
-                        # keep error info internally (not shown in main table)
                         edited["⚠️ Fehler"] = [_build_err_msg(i) for i in range(len(edited))]
-
                         st.session_state["constraints_edit_df"] = edited
 
                         has_interval_errors = bool((err_min_gt_max | err_base_gt_max).any())
@@ -615,6 +684,13 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                                     df_now["⚠️ Fehler"] = df_now.get("⚠️ Fehler", "").fillna("")
                                     st.session_state["constraints_edit_df"] = df_now.reset_index(drop=True)
                                     st.session_state["constraints_editor_nonce"] += 1
+
+                                    st.session_state["nutrient_mapping"] = None
+                                    st.session_state["nutrient_mapping_status"] = None
+                                    st.session_state["nutrient_mapping_mode"] = None
+                                    st.session_state["nutrient_mapping_signature"] = None
+                                    st.session_state["skip_missing_nutrients"] = False
+
                                     st.success(f"{int(to_delete.sum())} Zeile(n) gelöscht.")
                                     st.rerun()
                                 else:
@@ -631,6 +707,13 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                                 st.session_state["constraints_locked"] = False
                                 st.session_state["constraints_effective_df"] = None
                                 st.session_state["constraints_editor_nonce"] += 1
+
+                                st.session_state["nutrient_mapping"] = None
+                                st.session_state["nutrient_mapping_status"] = None
+                                st.session_state["nutrient_mapping_mode"] = None
+                                st.session_state["nutrient_mapping_signature"] = None
+                                st.session_state["skip_missing_nutrients"] = False
+
                                 st.success("Alles zurückgesetzt: gelöschte/hinzugefügte Zeilen + Änderungen wurden rückgängig gemacht.")
                                 st.rerun()
 
@@ -705,6 +788,13 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
                                             ignore_index=True
                                         )
                                         st.session_state["constraints_editor_nonce"] += 1
+
+                                        st.session_state["nutrient_mapping"] = None
+                                        st.session_state["nutrient_mapping_status"] = None
+                                        st.session_state["nutrient_mapping_mode"] = None
+                                        st.session_state["nutrient_mapping_signature"] = None
+                                        st.session_state["skip_missing_nutrients"] = False
+
                                         st.success(f"Nährstoff '{name_clean}' hinzugefügt.")
                                         st.rerun()
 
@@ -826,12 +916,248 @@ with st.expander("Dateien hochladen (aufklappen)", expanded=True):
         unsafe_allow_html=True
     )
 
-st.divider()
+# ------------------------------------------------------------
+# 6b) DATEN KONTROLLE 🛂
+# ------------------------------------------------------------
+st.markdown("### 🛂 Daten Kontrolle")
 
-# ---------------------------
-# Run optimization
-# ---------------------------
-can_run = status_ok and constraints_effective is not None and supplements is not None
+with st.expander("🛂 Daten Kontrolle  (aufklappen)", expanded=True):
+    if status_ok and ("constraints_edit_df" in st.session_state) and (supplements is not None):
+        st.markdown("#### 🔁 Nährstoff-Matching (Ration ↔ Supplementdatenbank)")
+        st.markdown(
+            "<div class='caption-note'>"
+            "Du musst nur jene Nährstoffe manuell zuordnen, die nicht eindeutig automatisch erkannt wurden. "
+            "Die Nährstoffe können auch ignoriert werden."
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+        ration_nutrients_now = (
+            st.session_state["constraints_edit_df"]["Nährstoff"].astype(str).str.strip().tolist()
+        )
+        ration_sig_now = tuple(ration_nutrients_now)
+
+        supp_names_sorted = sorted(list(infer_available_nutrients_from_supplements(supplements)))
+
+        if ("nutrient_mapping" not in st.session_state) or (st.session_state.get("nutrient_mapping") is None) \
+           or (st.session_state.get("nutrient_mapping_signature") != ration_sig_now):
+            m, s, mode = build_initial_mapping_and_status(ration_nutrients_now, supp_names_sorted)
+            st.session_state["nutrient_mapping"] = m
+            st.session_state["nutrient_mapping_status"] = s
+            st.session_state["nutrient_mapping_mode"] = mode
+            st.session_state["nutrient_mapping_signature"] = ration_sig_now
+
+        mapping = st.session_state["nutrient_mapping"] or {}
+        mapping_status = st.session_state.get("nutrient_mapping_status", {}) or {}
+        mapping_mode = st.session_state.get("nutrient_mapping_mode", {}) or {}
+
+        needs_manual = [
+            r for r in ration_nutrients_now
+            if (mapping_mode.get(r) == "manual") or (mapping_status.get(r) in {"missing", "fuzzy"})
+        ]
+
+        used = set(v for v in mapping.values() if v is not None)
+
+        def _safe_key(s: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9_]", "_", s)[:80]
+
+        if len(needs_manual) == 0:
+            st.markdown("<div class='okrow'>✅ Alle Nährstoffe wurden eindeutig automatisch gematched.</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(
+                "<div class='warnrow'>⚠️ Folgende Nährstoffe sind nicht eindeutig gematched und brauchen eine Auswahl:</div>",
+                unsafe_allow_html=True
+            )
+
+            m_left, m_right = st.columns([1, 1])
+            mid = int(np.ceil(len(needs_manual) / 2))
+            left_list = needs_manual[:mid]
+            right_list = needs_manual[mid:]
+
+            def render_match_column(names: list[str], col_container):
+                with col_container:
+                    for r in names:
+                        current = mapping.get(r, None)
+
+                        opts = ["(ignorieren)"]
+                        for sname in supp_names_sorted:
+                            if (sname not in used) or (current == sname):
+                                opts.append(sname)
+
+                        sugg = difflib.get_close_matches(
+                            normalize_name(r),
+                            [normalize_name(x) for x in supp_names_sorted],
+                            n=5,
+                            cutoff=0.75
+                        )
+                        norm_to_real = {normalize_name(x): x for x in supp_names_sorted}
+                        sugg_real = []
+                        for sn in sugg:
+                            real = norm_to_real.get(sn)
+                            if real and real in opts and real not in sugg_real:
+                                sugg_real.append(real)
+
+                        rest = [x for x in opts[1:] if x not in sugg_real]
+                        opts_final = ["(ignorieren)"] + sugg_real + rest
+
+                        if current is None:
+                            idx = 0
+                        else:
+                            try:
+                                idx = opts_final.index(current)
+                            except ValueError:
+                                idx = 0
+
+                        label_hint = " (kein Match)" if mapping_status.get(r) == "missing" else " (unklarer Match)"
+                        choice = st.selectbox(
+                            f"**{r}** →{label_hint}",
+                            options=opts_final,
+                            index=idx,
+                            key=f"map_{_safe_key(r)}",
+                        )
+
+                        if current is not None:
+                            used.discard(current)
+
+                        if choice == "(ignorieren)":
+                            mapping[r] = None
+                            mapping_mode[r] = "manual"
+                            mapping_status[r] = "missing"
+                        else:
+                            mapping[r] = choice
+                            used.add(choice)
+                            mapping_mode[r] = "manual"
+                            mapping_status[r] = "manual"
+
+            render_match_column(left_list, m_left)
+            render_match_column(right_list, m_right)
+
+            st.session_state["nutrient_mapping"] = mapping
+            st.session_state["nutrient_mapping_mode"] = mapping_mode
+            st.session_state["nutrient_mapping_status"] = mapping_status
+
+        # --- Skip + Checks (neu: immer sauber anhand aktuellem Skip-Status) ---
+        rows = []
+        for r in ration_nutrients_now:
+            v = mapping.get(r, None)
+            if st.session_state.get("skip_missing_nutrients", False) and (v is None):
+                st_val = "skipped"
+            else:
+                if v is None:
+                    st_val = "missing"
+                else:
+                    if mapping_mode.get(r) == "manual":
+                        st_val = "manual"
+                    else:
+                        st_val = mapping_status.get(r, "missing")
+
+            rows.append({
+                "Ration-Nährstoff": r,
+                "Supplement-Spalte": (v or ""),
+                "Status": st_val,
+            })
+
+        mapping_df = pd.DataFrame(rows)
+
+        def compute_needed_and_status(_constraints_effective: pd.DataFrame, _mapping: dict, _skip_missing: bool):
+            mapping_ok_local = True
+            missing_needed_local = []
+            skipped_missing_local = []
+
+            if _constraints_effective is None:
+                return None, mapping_ok_local, missing_needed_local, skipped_missing_local
+
+            eff_cols_local = list(_constraints_effective.columns)
+            base_eff_local = pd.to_numeric(_constraints_effective.loc["Grundnahrung", eff_cols_local], errors="coerce").fillna(0.0)
+            min_eff_local = pd.to_numeric(_constraints_effective.loc["Tagesbedarf", eff_cols_local], errors="coerce").fillna(0.0)
+            needed_local = (min_eff_local - base_eff_local).clip(lower=0.0)
+            needed_cols_local = [c for c in eff_cols_local if float(needed_local.get(c, 0.0)) > 0.0]
+
+            for n in needed_cols_local:
+                mapped_to = _mapping.get(n, None)
+                if mapped_to is None:
+                    if _skip_missing:
+                        skipped_missing_local.append(n)
+                    else:
+                        mapping_ok_local = False
+                        missing_needed_local.append(n)
+
+            return needed_cols_local, mapping_ok_local, missing_needed_local, skipped_missing_local
+
+        if constraints_effective is None:
+            st.markdown("<div class='warnrow'>⏳ Matching wird für die Optimierung erst geprüft, sobald du die Intervalle fixiert hast.</div>", unsafe_allow_html=True)
+        else:
+            skip_missing_default = bool(st.session_state.get("skip_missing_nutrients", False))
+            st.session_state["skip_missing_nutrients"] = st.checkbox(
+                "⏭️ Ich möchte fehlende (nicht zugeordnete) Nährstoffe überspringen und ohne sie optimieren.",
+                value=skip_missing_default,
+                key="skip_missing_nutrients_checkbox"
+            )
+
+            skip_missing_now = bool(st.session_state.get("skip_missing_nutrients", False))
+            needed_cols, mapping_ok, missing_needed, skipped_missing = compute_needed_and_status(
+                constraints_effective, mapping, skip_missing_now
+            )
+
+            if skip_missing_now:
+                # Warnung + Liste
+                if skipped_missing:
+                    st.markdown(
+                        "<div class='warnrow'>⚠️ Diese Nährstoffe werden aus der Optimierung entfernt (übersprungen):</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.json(sorted(skipped_missing))
+                else:
+                    st.markdown("<div class='okrow'>✅ Es gibt keine fehlenden benötigten Nährstoffe – Skip hat aktuell keinen Effekt.</div>", unsafe_allow_html=True)
+
+                # Abstand nach Skip-Block
+                st.markdown("<br><br><br>", unsafe_allow_html=True)
+
+            # Statusanzeige korrekt:
+            # - OK wenn mapping_ok True (d.h. alle needed gematched) ODER Skip aktiv
+            if mapping_ok or skip_missing_now:
+                st.markdown("<div class='okrow'>✅ Matching ok – Optimierung kann starten.</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='errorrow'>❌ Matching unvollständig – mindestens ein benötigter Nährstoff ist auf „ignorieren“ gesetzt.</div>", unsafe_allow_html=True)
+                st.info("Diese Nährstoffe haben noch Bedarf (>0), sind aber aktuell ignoriert / nicht gematched:")
+                st.json(missing_needed)
+
+        with st.expander("Übersicht anzeigen (Zuordnung)"):
+            st.dataframe(mapping_df, use_container_width=True, hide_index=True)
+
+    else:
+        st.markdown("<div class='warnrow'>⏳ Bitte zuerst beide Dateien korrekt hochladen (Datenformat ✅). Danach ist die Daten Kontrolle verfügbar.</div>", unsafe_allow_html=True)
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+# 7) RUN OPTIMIZATION
+# ------------------------------------------------------------
+mapping_ok_for_run = True
+mapped_constraints_effective = constraints_effective
+
+if status_ok and (supplements is not None) and (constraints_effective is not None) and ("nutrient_mapping" in st.session_state):
+    try:
+        mapping = st.session_state.get("nutrient_mapping") or {}
+        skip_missing = bool(st.session_state.get("skip_missing_nutrients", False))
+
+        mapped_constraints_effective = apply_mapping_to_constraints(constraints_effective, mapping)
+
+        eff_cols = list(constraints_effective.columns)
+        base_eff = pd.to_numeric(constraints_effective.loc["Grundnahrung", eff_cols], errors="coerce").fillna(0.0)
+        min_eff = pd.to_numeric(constraints_effective.loc["Tagesbedarf", eff_cols], errors="coerce").fillna(0.0)
+        needed = (min_eff - base_eff).clip(lower=0.0)
+        needed_cols = [c for c in eff_cols if float(needed.get(c, 0.0)) > 0.0]
+
+        for n in needed_cols:
+            if mapping.get(n, None) is None:
+                if skip_missing:
+                    continue
+                else:
+                    mapping_ok_for_run = False
+                    break
+    except Exception:
+        mapping_ok_for_run = False
+
+can_run = status_ok and (mapped_constraints_effective is not None) and (supplements is not None) and mapping_ok_for_run
 
 st.markdown("### 📈 Optimierung")
 
@@ -841,7 +1167,7 @@ with st.expander("Optimierung (aufklappen)", expanded=True):
         status_placeholder.markdown("<div class='warnrow'>⏳ Optimiere...</div>", unsafe_allow_html=True)
 
         try:
-            status, solution, cost, infeasible_msg, debug = optimize_fast(constraints_effective, supplements)
+            status, solution, cost, infeasible_msg, debug = optimize_fast(mapped_constraints_effective, supplements)
         except Exception as e:
             status_placeholder.markdown(f"<div class='errorrow'>❌ Fehler: {e}</div>", unsafe_allow_html=True)
             st.exception(e)
@@ -882,4 +1208,178 @@ with st.expander("Optimierung (aufklappen)", expanded=True):
                 unsafe_allow_html=True
             )
 
-        st.image("static/pikachu.jpg", width=220)
+        # ============================================================
+        # ✅ Info: Mindestmenge je ausgewähltem Supplement
+        # In optimize_fast() gilt MIN_KG = 1/1000 kg = 1 g.
+        # Bedeutet: wenn ein Supplement gewählt wird (y=1), dann mindestens 1g/Tag.
+        # ============================================================
+        st.caption("Hinweis: In der Optimierung gilt aktuell eine Mindestmenge von 1 g/Tag pro ausgewähltem Supplement (MIN_KG = 1/1000 kg).")
+
+        # ============================================================
+        # ✅ 1) Ergebnis-Tabelle: nur g + schmal
+        # (solution ist kg/Tag, wir zeigen g/Tag)
+        # ============================================================
+        solution_df = (
+            solution.rename("Tagesmenge (kg)")
+            .to_frame()
+            .reset_index()
+            .rename(columns={"index": "Supplement"})
+        )
+        solution_df["Tagesmenge (g)"] = solution_df["Tagesmenge (kg)"] * 1000.0
+        solution_df = solution_df.sort_values("Tagesmenge (g)", ascending=False).reset_index(drop=True)
+
+        display_supp_df = solution_df[["Supplement", "Tagesmenge (g)"]].copy()
+        display_supp_df["Tagesmenge (g)"] = display_supp_df["Tagesmenge (g)"].round(2)
+
+        st.markdown("#### 💊 Ausgewählte Supplements & Tagesmenge")
+        tcol, _ = st.columns([1.15, 1.85])
+        with tcol:
+            st.dataframe(
+                display_supp_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Supplement": st.column_config.TextColumn(width="medium"),
+                    "Tagesmenge (g)": st.column_config.NumberColumn(format="%.2f", width="small"),
+                },
+            )
+
+        # ============================================================
+        # ✅ 2) Haltbarkeit / Nachbestellen (Annahme: Kauf in kg)
+        # Standard: 1 kg pro Supplement, anpassbar
+        # ============================================================
+        with st.expander("📦 Haltbarkeit & Nachbestellen (aufklappen)", expanded=False):
+            st.caption("Annahme: Du kaufst pro Supplement eine Standardmenge in kg. Passe das bei Bedarf an.")
+
+            buy_kg = st.number_input(
+                "Standard-Kaufmenge pro Supplement (kg)",
+                min_value=0.1,
+                max_value=50.0,
+                value=1.0,
+                step=0.1,
+                format="%.1f",
+                key="buy_kg_default"
+            )
+
+            reorder_threshold_days = st.number_input(
+                "Nachbestellen, wenn Restlaufzeit unter (Tage)",
+                min_value=1,
+                max_value=365,
+                value=30,
+                step=1,
+                key="reorder_threshold_days"
+            )
+
+            supply_df = display_supp_df.copy()
+            supply_df["Kaufmenge (kg)"] = float(buy_kg)
+
+            # Tage = (kg * 1000 g/kg) / (g/Tag)
+            supply_df["Hält (Tage)"] = (supply_df["Kaufmenge (kg)"] * 1000.0) / supply_df["Tagesmenge (g)"]
+            supply_df["Hält (Tage)"] = supply_df["Hält (Tage)"].replace([np.inf, -np.inf], np.nan)
+
+            supply_df["Nachbestellen?"] = np.where(
+                supply_df["Hält (Tage)"] < float(reorder_threshold_days),
+                "✅ ja",
+                "—"
+            )
+
+            supply_df = supply_df.sort_values("Hält (Tage)", ascending=True).reset_index(drop=True)
+
+            st.markdown("##### Übersicht")
+            st.dataframe(
+                supply_df[["Supplement", "Tagesmenge (g)", "Kaufmenge (kg)", "Hält (Tage)", "Nachbestellen?"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Supplement": st.column_config.TextColumn(width="medium"),
+                    "Tagesmenge (g)": st.column_config.NumberColumn(format="%.2f", width="small"),
+                    "Kaufmenge (kg)": st.column_config.NumberColumn(format="%.1f", width="small"),
+                    "Hält (Tage)": st.column_config.NumberColumn(format="%.1f", width="small"),
+                    "Nachbestellen?": st.column_config.TextColumn(width="small"),
+                },
+            )
+
+            need_reorder = supply_df.loc[supply_df["Nachbestellen?"] == "✅ ja", "Supplement"].tolist()
+            if need_reorder:
+                st.info("Diese Supplements müsstest du (nach der eingestellten Schwelle) bald nachbestellen:")
+                st.json(need_reorder)
+            else:
+                st.success("Keine Supplements liegen unter der Nachbestell-Schwelle.")
+
+        # ============================================================
+        # ✅ 4) Finale Nährstoff-Tabelle (aufklappbar):
+        # Min / Max / Grundnahrung / nach Supplementierung
+        # ============================================================
+        with st.expander("🧪 Nährstoff-Check (Min/Max/Base + nach Supplementierung)", expanded=False):
+            nutrient_cols = debug.get("nutrient_cols", [])
+            supp_clean = debug.get("supp_clean", None)
+
+            if (supp_clean is None) or (len(nutrient_cols) == 0):
+                st.warning("Keine Nährstoffdaten für die Übersicht verfügbar.")
+            else:
+                # x in kg/Tag
+                x_kg = solution  # index = Futtermittel, values = kg
+
+                # Supplementbeitrag pro Nährstoff: Summe( (Wert pro kg) * kg )
+                supp_intake = {}
+                for n in nutrient_cols:
+                    vals_perkg = supp_clean[n].reindex(x_kg.index).fillna(0.0)
+                    supp_intake[n] = float((vals_perkg * x_kg).sum())
+
+                # Basis/Min/Max aus gemappten Constraints
+                cdf = mapped_constraints_effective
+
+                base = pd.to_numeric(cdf.loc["Grundnahrung", nutrient_cols], errors="coerce").fillna(0.0)
+                minv = pd.to_numeric(cdf.loc["Tagesbedarf", nutrient_cols], errors="coerce").fillna(0.0)
+                maxv = pd.to_numeric(cdf.loc["Maximaler_Wert", nutrient_cols], errors="coerce")
+
+                after = base.copy()
+                for n in nutrient_cols:
+                    after[n] = float(base.get(n, 0.0)) + float(supp_intake.get(n, 0.0))
+
+                nutri_check = pd.DataFrame({
+                    "Nährstoff": nutrient_cols,
+                    "Minimum (Tagesbedarf)": [float(minv.get(n, 0.0)) for n in nutrient_cols],
+                    "Maximum": [float(maxv.get(n)) if pd.notna(maxv.get(n)) else np.nan for n in nutrient_cols],
+                    "Grundnahrung": [float(base.get(n, 0.0)) for n in nutrient_cols],
+                    "Nach Supplementierung": [float(after.get(n, 0.0)) for n in nutrient_cols],
+                })
+
+                def _status_row(row):
+                    ok_min = row["Nach Supplementierung"] + 1e-9 >= row["Minimum (Tagesbedarf)"]
+                    if pd.isna(row["Maximum"]):
+                        ok_max = True
+                    else:
+                        ok_max = row["Nach Supplementierung"] <= row["Maximum"] + 1e-9
+
+                    if ok_min and ok_max:
+                        return "✅ ok"
+                    if (not ok_min) and ok_max:
+                        return "⬇️ unter Min"
+                    if ok_min and (not ok_max):
+                        return "⬆️ über Max"
+                    return "⚠️ außerhalb"
+
+                nutri_check["Status"] = nutri_check.apply(_status_row, axis=1)
+
+                # Rundung für Anzeige
+                for c in ["Minimum (Tagesbedarf)", "Maximum", "Grundnahrung", "Nach Supplementierung"]:
+                    nutri_check[c] = nutri_check[c].round(4)
+
+                nutri_check = nutri_check.sort_values(["Status", "Nährstoff"]).reset_index(drop=True)
+
+                st.dataframe(
+                    nutri_check,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Nährstoff": st.column_config.TextColumn(width="medium"),
+                        "Minimum (Tagesbedarf)": st.column_config.NumberColumn(width="small"),
+                        "Maximum": st.column_config.NumberColumn(width="small"),
+                        "Grundnahrung": st.column_config.NumberColumn(width="small"),
+                        "Nach Supplementierung": st.column_config.NumberColumn(width="small"),
+                        "Status": st.column_config.TextColumn(width="small"),
+                    },
+                )
+
+        #st.image("static/pikachu.jpg", width=220)

@@ -1,3 +1,52 @@
+2) Check zwischen beiden Spalten namen anschauen. Left Merge also zeigen welche Vitamine nicht gefunden wurden, 
+und von den nicht gematchen Nährstoffen auf der rechten Seite dann auswählen
+-> alles wurde gematcht 
+3) Datenformat ✅ basierend auf links, rechts + dem letzten Check 
+4) Anzahl der Supplemente also extra Kapitel  
+
+
+
+
+
+
+eine mach weiter check Funktion für die Linke Seite 
+bzw Warnung, dass gewisse Nährstoffe fehlen 
++ noch zusätzlich angeben weilches Tier + welches Gewicht es sich handelt
++ Auswahlmöglichkeiten ob Nährstoffe entfernt werden 
++ wie lange halten die Supplements wir kaufen das ja in KG?
++ änder das Fenster unter Optimierung starten (einfach net anzeigen oder nur als Nachricht
+
+Vor Optimerung starten sollte es noch eine Übersichtstabelle geben.
+deployend und passwortschutz 
+
+
+
+
+Rationsdaten Warnung diese Nährstoffe wurden nicht ausgefüllt 
+mit check box -> diesen Nährstoffe werden ignoriert 
+Option die Intervalle anzupassen bzw Sachen zu löschen 
+wie lange hält das 
+
+IST ES EIGENTLICH DANACH OPTIMIERT WIE LANGE DAS HÖÄLLT?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 To Dos
 
 1) Neue Daten laden
