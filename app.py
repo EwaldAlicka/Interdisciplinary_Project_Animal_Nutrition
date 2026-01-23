@@ -1129,6 +1129,7 @@ with st.expander("🛂 Daten Kontrolle  (aufklappen)", expanded=True):
         st.markdown("<div class='warnrow'>⏳ Bitte zuerst beide Dateien korrekt hochladen (Datenformat ✅). Danach ist die Daten Kontrolle verfügbar.</div>", unsafe_allow_html=True)
 # ------------------------------------------------------------
 # ------------------------------------------------------------
+# ------------------------------------------------------------
 # 7) RUN OPTIMIZATION
 # ------------------------------------------------------------
 mapping_ok_for_run = True
