@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-matplotlib
-seaborn
-openpyxl
-pulp
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.26
+openpyxl>=3.1
+msoffcrypto-tool>=5.0
+pulp>=2.7
+plotly>=5.18
+xlwings>=0.30
