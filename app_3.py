@@ -339,6 +339,70 @@ def get_min_values_via_xlwings(
     return mins, maxs
 
 
+def get_min_values_via_openpyxl(
+    file_bytes: bytes,
+    password: str,
+    identifier: str,
+    nutrient_names: list,
+) -> tuple:
+    """Read requirements from the Bedarf sheet using openpyxl (no Excel needed).
+    Returns cached values from the last time the file was saved — weight cannot be
+    recomputed here, so the returned values reflect whatever weight was active when
+    the file was last saved in Excel."""
+    buf = io.BytesIO(file_bytes)
+    office = msoffcrypto.OfficeFile(buf)
+    office.load_key(password=password)
+    dec = io.BytesIO()
+    office.decrypt(dec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(dec, keep_vba=True, data_only=True)
+
+    ws = wb["Bedarf"]
+
+    target_row = None
+    for r in range(2, 41):
+        val = ws.cell(row=r, column=1).value
+        if val and str(val).strip() == identifier.strip():
+            target_row = r
+            break
+    if target_row is None:
+        available = [str(ws.cell(row=r, column=1).value).strip()
+                     for r in range(2, 41) if ws.cell(row=r, column=1).value]
+        raise ValueError(f"Identifier '{identifier}' not found in Bedarf sheet. "
+                         f"Available: {available}")
+
+    min_col: dict = {}
+    max_col: dict = {}
+    for c in range(1, 221):
+        hdr = ws.cell(row=1, column=c).value
+        if hdr is None:
+            continue
+        s = str(hdr).strip()
+        clean = re.sub(r"[_\s]*min\s*$", "", s, flags=re.IGNORECASE).strip()
+        if clean and clean != s:
+            min_col[clean] = c
+            continue
+        clean = re.sub(r"[_\s]*max\s*$", "", s, flags=re.IGNORECASE).strip()
+        if clean and clean != s:
+            max_col[clean] = c
+
+    def _val(col_map, name):
+        c = col_map.get(name)
+        if c is None:
+            return 0.0
+        v = ws.cell(row=target_row, column=c).value
+        try:
+            fv = float(v)
+            return 0.0 if math.isnan(fv) else fv
+        except (TypeError, ValueError):
+            return 0.0
+
+    mins = {name: _val(min_col, name) for name in nutrient_names}
+    maxs = {name: _val(max_col, name) for name in nutrient_names if _val(max_col, name) > 0}
+    return mins, maxs
+
+
 def build_constraints_from_mins(
     mins_dict: dict,
     selected_nutrients: list,
@@ -1206,20 +1270,36 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                             use_calc_max,
                         )
 
+                        if not _XLWINGS_OK:
+                            st.info(
+                                "ℹ️ Running in cloud mode — requirements are read from the "
+                                "cached values in the uploaded Excel file (weight field is ignored). "
+                                "For weight-adjusted results, set the correct weight in Excel before "
+                                "uploading, or run the app locally on Windows.",
+                            )
+
                         if st.button("🔢 Calculate Requirements", type="secondary", key="v3_calc_btn",
                                      disabled=bool(_ft_truly_missing) or not _ft_map_locked):
-                            with st.spinner("Opening Excel and calculating…"):
+                            with st.spinner("Reading requirements…"):
                                 try:
-                                    mins_dict, maxs_dict = get_min_values_via_xlwings(
-                                        file_bytes=file_bytes,
-                                        password=_VT_PASSWORD,
-                                        identifier=identifier,
-                                        weight=user_weight,
-                                        nutrient_names=nutrient_names,
-                                        welpen=welpen_input,
-                                        lebenswoche=lebenswoche_input,
-                                        adult_weight=adult_weight_input,
-                                    )
+                                    if _XLWINGS_OK:
+                                        mins_dict, maxs_dict = get_min_values_via_xlwings(
+                                            file_bytes=file_bytes,
+                                            password=_VT_PASSWORD,
+                                            identifier=identifier,
+                                            weight=user_weight,
+                                            nutrient_names=nutrient_names,
+                                            welpen=welpen_input,
+                                            lebenswoche=lebenswoche_input,
+                                            adult_weight=adult_weight_input,
+                                        )
+                                    else:
+                                        mins_dict, maxs_dict = get_min_values_via_openpyxl(
+                                            file_bytes=file_bytes,
+                                            password=_VT_PASSWORD,
+                                            identifier=identifier,
+                                            nutrient_names=nutrient_names,
+                                        )
                                     constraints_raw = build_constraints_from_mins(
                                         mins_dict, selected_nutrients,
                                         maxs_dict=maxs_dict, use_calculated_max=use_calc_max,
