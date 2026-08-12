@@ -56,15 +56,15 @@ st.markdown(
     div[data-testid="column"]:last-child div[data-testid="stImage"]{display:flex;justify-content:flex-end;}
     div[data-testid="column"]:last-child div[data-testid="stImage"] img{margin-left:auto;}
     :root{
-      --btn_primary_font: 1.50rem; --btn_primary_weight: 600;
-      --btn_primary_py: 0.55rem;  --btn_primary_px: 0.90rem;
+      --btn_primary_font: 1.15rem; --btn_primary_weight: 600;
+      --btn_primary_py: 0.40rem;  --btn_primary_px: 0.75rem;
       --btn_primary_radius: 10px;
-      --btn_secondary_font: 1.15rem; --btn_secondary_weight: 450;
-      --btn_secondary_py: 0.25rem;   --btn_secondary_px: 0.65rem;
+      --btn_secondary_font: 1rem; --btn_secondary_weight: 450;
+      --btn_secondary_py: 0.20rem;   --btn_secondary_px: 0.55rem;
       --btn_secondary_radius: 10px;
-      --chk_font: 1.25rem; --chk_weight: 500;
-      --chk_scale: 1.45;   --chk_gap: 12px;
-      --caption_font: 1.15rem; --caption_weight: 450;
+      --chk_font: 1rem; --chk_weight: 500;
+      --chk_scale: 1.1;   --chk_gap: 6px;
+      --caption_font: 0.95rem; --caption_weight: 450;
       --caption_opacity: 0.85; --caption_line: 1.35;
     }
     div[data-testid="stCheckbox"] label,
