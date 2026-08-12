@@ -120,11 +120,6 @@ st.markdown(
     .kpi-value{font-size:2.2rem;font-weight:900;margin-top:4px;line-height:1.05;}
     div[data-testid="stVerticalBlock"]:has(#ft-sm-btn-marker) button[kind="secondary"]{
       font-size:0.85rem!important;padding:0.1rem 0.4rem!important;min-height:auto!important;}
-    div[data-testid="stFileUploader"] button[kind="secondary"],
-    section[data-testid="stFileUploaderDropzone"] button[kind="secondary"]{
-      --btn_secondary_font:1.4rem;
-      --btn_secondary_py:0.55rem;
-      --btn_secondary_px:1.3rem;}
     </style>
     """,
     unsafe_allow_html=True,
