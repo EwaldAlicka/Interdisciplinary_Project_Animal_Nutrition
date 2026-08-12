@@ -407,6 +407,36 @@ def get_min_values_via_openpyxl(
     return mins, maxs
 
 
+@st.cache_data
+def read_me_from_bedarf(
+    file_bytes: bytes, identifier: str, password: str = _VT_PASSWORD
+) -> Optional[float]:
+    """Read ME (Metabolizable Energy, MJ/day) from column K of the Bedarf sheet
+    for the row matching *identifier*. Returns None if not found or not numeric."""
+    buf = io.BytesIO(file_bytes)
+    office = msoffcrypto.OfficeFile(buf)
+    office.load_key(password=password)
+    dec = io.BytesIO()
+    office.decrypt(dec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(dec, keep_vba=True, data_only=True)
+    ws = wb["Bedarf"]
+    target_row = None
+    for r in range(2, 41):
+        val = ws.cell(row=r, column=1).value
+        if val and str(val).strip() == identifier.strip():
+            target_row = r
+            break
+    if target_row is None:
+        return None
+    raw = ws.cell(row=target_row, column=11).value   # column K
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_constraints_from_mins(
     mins_dict: dict,
     selected_nutrients: list,
@@ -1026,6 +1056,7 @@ supp_ok              = False
 excluded_supps_table = pd.DataFrame()
 
 with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=True):
+    _sel_locked = st.session_state.get("v3_selection_locked", False)
     left, right = st.columns(2)
 
     # --------------------------------------------------------
@@ -1038,6 +1069,14 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
             vt_file = st.file_uploader(
                 "volle_Tabelle Upload", type=["xlsm", "xlsx"],
                 label_visibility="collapsed", key="vt_uploader",
+                disabled=_sel_locked,
+            )
+            st.text_input(
+                "🔑 File password",
+                value=_VT_PASSWORD,
+                type="password",
+                key="v3_vt_password",
+                help="Password used to open the CarniDiet© file. Update here if the password changes.",
             )
 
             if vt_file:
@@ -1063,7 +1102,8 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                         st.session_state["v3_last_file_hash"] = _new_hash
                         st.rerun()
 
-                    nutrient_names = get_nutrient_names_from_bedarf(file_bytes)
+                    _vt_pw = st.session_state.get("v3_vt_password") or _VT_PASSWORD
+                    nutrient_names = get_nutrient_names_from_bedarf(file_bytes, password=_vt_pw)
                     st.markdown("<div class='okrow'>✅ File loaded</div>", unsafe_allow_html=True)
 
                     # ── Info: parameters come from Excel ─────────────
@@ -1079,7 +1119,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                     )
 
                     # ── Read parameters from the uploaded file ────────
-                    params = read_patient_params_from_excel(file_bytes)
+                    params = read_patient_params_from_excel(file_bytes, password=_vt_pw)
                     identifier = params["identifier"]
 
                     if not identifier:
@@ -1126,6 +1166,24 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                             )
                         _param_html += "</div>"
                         st.markdown(_param_html, unsafe_allow_html=True)
+
+                        # ── Daily Energy Requirement (ME) ─────────────
+                        _me_req_val = read_me_from_bedarf(
+                            file_bytes, identifier, password=_vt_pw
+                        )
+                        st.session_state["v3_me_req"] = _me_req_val
+                        if _me_req_val is not None:
+                            st.markdown(
+                                "<div style='background:rgba(255,165,0,0.10);"
+                                "border:1px solid rgba(255,165,0,0.40);"
+                                "border-radius:0.5rem;padding:0.45rem 1rem;"
+                                "font-size:0.95rem;margin-bottom:0.5rem;'>"
+                                "<span style='font-weight:600;color:#19425e;'>"
+                                "⚡ Daily Energy Requirement (ME):</span>"
+                                f"&nbsp;<b>{_me_req_val:.3f} MJ/day</b>"
+                                "</div>",
+                                unsafe_allow_html=True,
+                            )
 
                     # ── Nutrient selection ────────────────────────────
                     st.markdown("<div style='margin-top:1.1rem;'></div>", unsafe_allow_html=True)
@@ -1237,7 +1295,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                         st.caption(f"{len(selected_nutrients)} nutrients selected.")
 
                         # ── Futtermittel Column Mapping ───────────────
-                        _ft_cols_all = get_futtermittel_column_names(file_bytes)
+                        _ft_cols_all = get_futtermittel_column_names(file_bytes, password=_vt_pw)
                         _ft_map_sig  = tuple(selected_nutrients)
                         if (st.session_state.get("v3_ft_map") is None
                                 or st.session_state.get("v3_ft_map_sig") != _ft_map_sig):
@@ -1352,7 +1410,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                 try:
                                     mins_dict, maxs_dict = get_min_values_via_openpyxl(
                                         file_bytes=file_bytes,
-                                        password=_VT_PASSWORD,
+                                        password=_vt_pw,
                                         identifier=identifier,
                                         nutrient_names=nutrient_names,
                                     )
@@ -1386,7 +1444,8 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                         if "constraints_edit_df" in st.session_state and constraints_raw is not None:
                             st.markdown("#### 🧾 Nutrient Intervals")
                             locked   = bool(st.session_state.get("constraints_locked", False))
-                            _nu_intv = get_futtermittel_nutrient_units(file_bytes)
+                            _nu_intv = {**get_futtermittel_nutrient_units(file_bytes, password=_vt_pw),
+                                        **st.session_state.get("v3_custom_units", {})}
                             _cdf_now = st.session_state["constraints_edit_df"]
 
                             # Validate intervals
@@ -1476,19 +1535,29 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                     st.session_state["constraints_edit_df"] = _df_del
                                     st.session_state["nutrient_mapping"] = None
                                     st.session_state["mapping_locked"]  = False
+                                    # Remove any custom units for deleted nutrients
+                                    _cu = st.session_state.get("v3_custom_units", {})
+                                    for _dn in _del_sel:
+                                        _cu.pop(_dn, None)
+                                    st.session_state["v3_custom_units"] = _cu
                                     st.success(f"✅ {len(_del_sel)} nutrient(s) deleted.")
                                     st.rerun()
 
                             # ── Add new nutrient ──────────────────────
                             with st.expander("➕ Add new nutrient", expanded=False):
-                                add_c1, add_c2, add_c3 = st.columns([2.2, 1.2, 1.2])
+                                add_c1, add_c2, add_c3, add_c4 = st.columns([1.8, 1.3, 1.0, 1.0])
                                 with add_c1:
                                     new_name = st.text_input("Nutrient name", value="", disabled=locked, key="v3_new_name")
                                 with add_c2:
-                                    new_min_val = st.number_input("Min", value=0.0, step=0.01, format="%.2f", disabled=locked, key="v3_new_min")
+                                    new_unit = st.selectbox(
+                                        "Unit",
+                                        options=["mg", "g", "µg", "IE", "mmol", "%", "other"],
+                                        disabled=locked, key="v3_new_unit",
+                                    )
                                 with add_c3:
+                                    new_min_val = st.number_input("Min", value=0.0, step=0.01, format="%.2f", disabled=locked, key="v3_new_min")
+                                with add_c4:
                                     new_max_val = st.number_input("Max", value=0.0, step=0.01, format="%.2f", disabled=locked, key="v3_new_max")
-                                new_base_val = st.number_input("Base Diet", value=0.0, step=0.01, format="%.2f", disabled=locked, key="v3_new_base")
                                 if st.button("➕ Add", type="secondary", key="v3_add_btn", disabled=locked):
                                     nc = (new_name or "").strip()
                                     if not nc:
@@ -1500,12 +1569,16 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                         elif float(new_max_val) > 0 and float(new_min_val) > float(new_max_val):
                                             st.error("Min must not exceed Max.")
                                         else:
+                                            # Persist the unit for display in all unit dicts
+                                            _cu = st.session_state.get("v3_custom_units", {})
+                                            _cu[nc] = new_unit
+                                            st.session_state["v3_custom_units"] = _cu
                                             new_row = pd.DataFrame([{
                                                 "Nährstoff": nc,
                                                 "Tagesbedarf (Min)": float(new_min_val),
                                                 "Maximalwert (Max)": float(new_max_val) if new_max_val else np.nan,
-                                                "Grundnahrung": float(new_base_val),
-                                                "Bedarf nach Grundnahrung (Min-Base)": max(0.0, float(new_min_val) - float(new_base_val)),
+                                                "Grundnahrung": 0.0,
+                                                "Bedarf nach Grundnahrung (Min-Base)": float(new_min_val),
                                                 "🗑 Löschen": False, "⚠️ Fehler": "",
                                             }])
                                             st.session_state["constraints_edit_df"] = pd.concat(
@@ -1591,6 +1664,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
             supp_file = st.file_uploader(
                 "Supplement DB Upload", type="xlsx",
                 label_visibility="collapsed", key="supp_uploader",
+                disabled=_sel_locked,
             )
             proceed_without_incomplete = False
 
@@ -1626,7 +1700,9 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                 label_visibility="collapsed",
                             )
 
-                            # Build display table
+                            # Build display table — hide auto-excluded (no price) supplements
+                            _auto_excl = set(excluded_supps_table["Supplement"].tolist()) \
+                                         if not excluded_supps_table.empty else set()
                             _sb_price = pd.to_numeric(
                                 supplements["Preis (€) pro kg"], errors="coerce"
                             )
@@ -1636,6 +1712,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                             _sb_rows["Excluded"] = _sb_rows["Futtermittel"].isin(_sb_excl_now)
                             _sb_rows = _sb_rows.rename(columns={"Futtermittel": "Name"})
                             _sb_rows = _sb_rows.dropna(subset=["Name"])
+                            _sb_rows = _sb_rows[~_sb_rows["Name"].isin(_auto_excl)]
 
                             if _sb_search.strip():
                                 _sb_filtered = _sb_rows[
@@ -1656,9 +1733,10 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                 },
                             )
 
-                            # Exclusion multiselect
+                            # Exclusion multiselect — also hide auto-excluded supplements
                             _sb_all_names = sorted(
-                                supplements["Futtermittel"].dropna().unique().tolist()
+                                n for n in supplements["Futtermittel"].dropna().unique().tolist()
+                                if n not in _auto_excl
                             )
                             _excl_selected = st.multiselect(
                                 "Exclude from optimization",
@@ -1681,13 +1759,32 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                     st.caption(f"Technical notice: {e}")
                     supp_ok = False
 
-    status_ok   = volle_tabelle_ok and supp_ok
-    status_icon = "✅" if status_ok else "⏳"
-    st.markdown(
-        f"<div class='statusline' style='font-size:1.8rem;text-align:center;'>Data Format "
-        f"<span style='font-size:1.8rem;margin-left:0.2rem;'>{status_icon}</span></div>",
-        unsafe_allow_html=True,
-    )
+    status_ok = volle_tabelle_ok and supp_ok
+
+    _, _fix_sel_col, _ = st.columns([1, 2, 1])
+    with _fix_sel_col:
+        if status_ok:
+            if st.button(
+                "🔓 Unlock selection" if _sel_locked else "🔏 Fix selection",
+                type="secondary",
+                key="v3_fix_sel_btn",
+                use_container_width=True,
+            ):
+                st.session_state["v3_selection_locked"] = not _sel_locked
+                st.rerun()
+        else:
+            st.markdown(
+                "<div style='text-align:center;color:gray;font-size:0.95rem;padding:0.4rem 0;'>"
+                "⏳ Upload both files to fix selection.</div>",
+                unsafe_allow_html=True,
+            )
+
+    if _sel_locked and status_ok:
+        st.markdown(
+            "<div class='statusline' style='font-size:1.8rem;text-align:center;margin-top:0.5rem;'>"
+            "Final Data Format <span style='font-size:1.8rem;margin-left:0.2rem;'>✅</span></div>",
+            unsafe_allow_html=True,
+        )
 
 # ============================================================
 # 2b) GRUNDNAHRUNG (BASE DIET)
@@ -1701,7 +1798,8 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
     if not _fb:
         st.info("⬆️ Upload CarniDiet© file first to enable base diet selection.")
     else:
-        _fdf = parse_futtermittel_sheet(_fb)
+        _fb_pw = st.session_state.get("v3_vt_password") or _VT_PASSWORD
+        _fdf = parse_futtermittel_sheet(_fb, password=_fb_pw)
         if _fdf.empty:
             st.warning("Could not load Futtermittel data from volle_Tabelle.xlsm.")
         else:
@@ -1732,117 +1830,133 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
             with gnd_left:
                 st.markdown("#### 🔍 Filter & Select Food")
 
-                # ── Typ ────────────────────────────────────────────
-                _typs_avail = sorted(_fdf["Typ"].dropna().unique())
-                _sel_typ = st.selectbox("Type", ["(All)"] + _typs_avail, key="v3_gnd_typ")
+                # ── Collapsable 1: Browse by Type & Category ───────
+                with st.expander("📂 Browse by Type & Category", expanded=True):
 
-                # Einzelfuttermittel = raw ingredients, species-agnostic → no species filter.
-                # All other Typs (Ergänzungs-, Allein-, Diätfuttermittel) are species-specific.
-                if _sel_typ == "(All)" or _sel_typ == "Einzelfuttermittel":
-                    _df_typ = _fdf if _sel_typ == "(All)" else _fdf[_fdf["Typ"] == _sel_typ]
-                else:
-                    _df_typ = _fdf[(_fdf["Typ"] == _sel_typ) & (_fdf["Spezies"] == _app_spezies)]
+                    # ── Typ ────────────────────────────────────────
+                    _typs_avail = sorted(_fdf["Typ"].dropna().unique())
+                    _sel_typ = st.selectbox("Type", ["(All)"] + _typs_avail, key="v3_gnd_typ")
 
-                # ── Kategorie ──────────────────────────────────────
-                # Valid categories per Typ as defined by Combobox-Quellen sheet.
-                # Items mis-tagged outside these categories are excluded.
-                _VALID_KATS: dict = {
-                    "Einzelfuttermittel":      {"Fleisch & Fisch", "Innereien, TNPs, Schlachtabfälle & Tiermehle",
-                                                "Ei- & Milchprodukte", "Getreide, Samen & Kartoffeln",
-                                                "Gemüse, Obst & Strukturtoffe", "Fette & Öle", "Mineralstoffe"},
-                    "Alleinfuttermittel":      {"Feuchtfutter", "Halbfeuchte Futter", "Trockenfutter"},
-                    "Ergänzungsfuttermittel":  {"vitaminierte Mineralfutter", "Vitamin/Spurenelement-Präparat",
-                                                "sonst. Supplemente"},
-                    "Diätfuttermittel":        {"Feuchtfutter", "Trockenfutter"},
-                }
-                _valid_set = _VALID_KATS.get(_sel_typ, None)
-                _raw_kats  = _df_typ["Kategorie"].dropna().unique()
-                if _valid_set is not None:
-                    _kats_avail = sorted(k for k in _raw_kats if k in _valid_set)
-                    _df_typ = _df_typ[_df_typ["Kategorie"].isin(_valid_set)]
-                else:
-                    _kats_avail = sorted(_raw_kats)
-                # Validate stored Kategorie against current options; reset if stale
-                if st.session_state.get("v3_gnd_kat", "(All)") not in ["(All)"] + _kats_avail:
-                    st.session_state["v3_gnd_kat"] = "(All)"
-                _sel_kat = st.selectbox("Category", ["(All)"] + _kats_avail, key="v3_gnd_kat")
-                _df_flt = _df_typ if _sel_kat == "(All)" else _df_typ[_df_typ["Kategorie"] == _sel_kat]
+                    # Einzelfuttermittel = raw ingredients, species-agnostic → no species filter.
+                    # All other Typs (Ergänzungs-, Allein-, Diätfuttermittel) are species-specific.
+                    if _sel_typ == "(All)" or _sel_typ == "Einzelfuttermittel":
+                        _df_typ = _fdf if _sel_typ == "(All)" else _fdf[_fdf["Typ"] == _sel_typ]
+                    else:
+                        _df_typ = _fdf[(_fdf["Typ"] == _sel_typ) & (_fdf["Spezies"] == _app_spezies)]
 
-                # ── Reset product multiselect when filter changes ──
-                _flt_sig = (_sel_typ, _sel_kat)
-                if st.session_state.get("v3_gnd_flt_sig") != _flt_sig:
-                    st.session_state["v3_gnd_products"] = []
-                    st.session_state["v3_gnd_flt_sig"] = _flt_sig
+                    # ── Kategorie ──────────────────────────────────
+                    # Valid categories per Typ as defined by Combobox-Quellen sheet.
+                    # Items mis-tagged outside these categories are excluded.
+                    _VALID_KATS: dict = {
+                        "Einzelfuttermittel":      {"Fleisch & Fisch", "Innereien, TNPs, Schlachtabfälle & Tiermehle",
+                                                    "Ei- & Milchprodukte", "Getreide, Samen & Kartoffeln",
+                                                    "Gemüse, Obst & Strukturtoffe", "Fette & Öle", "Mineralstoffe"},
+                        "Alleinfuttermittel":      {"Feuchtfutter", "Halbfeuchte Futter", "Trockenfutter"},
+                        "Ergänzungsfuttermittel":  {"vitaminierte Mineralfutter", "Vitamin/Spurenelement-Präparat",
+                                                    "sonst. Supplemente"},
+                        "Diätfuttermittel":        {"Feuchtfutter", "Trockenfutter"},
+                    }
+                    _valid_set = _VALID_KATS.get(_sel_typ, None)
+                    _raw_kats  = _df_typ["Kategorie"].dropna().unique()
+                    if _valid_set is not None:
+                        _kats_avail = sorted(k for k in _raw_kats if k in _valid_set)
+                        _df_typ = _df_typ[_df_typ["Kategorie"].isin(_valid_set)]
+                    else:
+                        _kats_avail = sorted(_raw_kats)
+                    # Validate stored Kategorie against current options; reset if stale
+                    if st.session_state.get("v3_gnd_kat", "(All)") not in ["(All)"] + _kats_avail:
+                        st.session_state["v3_gnd_kat"] = "(All)"
+                    _sel_kat = st.selectbox("Category", ["(All)"] + _kats_avail, key="v3_gnd_kat")
+                    _df_flt = _df_typ if _sel_kat == "(All)" else _df_typ[_df_typ["Kategorie"] == _sel_kat]
 
-                st.caption(f"{len(_df_flt)} food item(s) in this selection.")
+                    # ── Reset product multiselect when filter changes ──
+                    _flt_sig = (_sel_typ, _sel_kat)
+                    if st.session_state.get("v3_gnd_flt_sig") != _flt_sig:
+                        st.session_state["v3_gnd_products"] = []
+                        st.session_state["v3_gnd_flt_sig"] = _flt_sig
 
-                _prod_opts = _df_flt["Name"].tolist()
-                _sel_prods = st.multiselect(
-                    "Select food items", options=_prod_opts,
-                    key="v3_gnd_products", placeholder="Choose one or more…",
+                    st.caption(f"{len(_df_flt)} food item(s) in this selection.")
+
+                    _prod_opts = _df_flt["Name"].tolist()
+                    _sel_prods = st.multiselect(
+                        "Select food items", options=_prod_opts,
+                        key="v3_gnd_products", placeholder="Choose one or more…",
+                    )
+
+                    _pg: dict = {}
+                    if _sel_prods:
+                        st.markdown("**Grams per day:**")
+                        for _pn in _sel_prods:
+                            _pg[_pn] = st.number_input(
+                                _pn[:40], min_value=0.0, max_value=5000.0,
+                                value=100.0, step=1.0, format="%.0f",
+                                key=f"v3_gnd_g_{_pn}",
+                            )
+
+                        if st.button("➕ Add to base diet", type="secondary", key="v3_gnd_add"):
+                            _bsk = list(st.session_state["v3_base_diet"])
+                            for _pn in _sel_prods:
+                                _pr = _df_flt[_df_flt["Name"] == _pn].iloc[0]
+                                _bsk.append({
+                                    "name": _pn,
+                                    "num": int(_pr["Num"]),
+                                    "identifier": str(_pr["Identifier"]),
+                                    "grams": float(_pg.get(_pn, 100.0)),
+                                    "nutrients": {c: float(_pr[c]) for c in _ft_nutr_cols},
+                                })
+                            st.session_state["v3_base_diet"] = _bsk
+                            st.success(f"✅ Added {len(_sel_prods)} item(s) to base diet.")
+                            st.rerun()
+
+                # ── Separator between the two search methods ───────
+                st.markdown(
+                    "<hr style='border:0;border-top:1px solid rgba(49,51,63,0.18);"
+                    "margin:0.55rem 0;padding:0;'/>",
+                    unsafe_allow_html=True,
                 )
 
-                _pg: dict = {}
-                if _sel_prods:
-                    st.markdown("**Grams per day:**")
-                    for _pn in _sel_prods:
-                        _pg[_pn] = st.number_input(
-                            _pn[:40], min_value=0.0, max_value=5000.0,
-                            value=100.0, step=1.0, format="%.0f",
-                            key=f"v3_gnd_g_{_pn}",
-                        )
-
-                    if st.button("➕ Add to base diet", type="secondary", key="v3_gnd_add"):
-                        _bsk = list(st.session_state["v3_base_diet"])
-                        for _pn in _sel_prods:
-                            _pr = _df_flt[_df_flt["Name"] == _pn].iloc[0]
-                            _bsk.append({
-                                "name": _pn,
-                                "num": int(_pr["Num"]),
-                                "identifier": str(_pr["Identifier"]),
-                                "grams": float(_pg.get(_pn, 100.0)),
-                                "nutrients": {c: float(_pr[c]) for c in _ft_nutr_cols},
-                            })
-                        st.session_state["v3_base_diet"] = _bsk
-                        st.success(f"✅ Added {len(_sel_prods)} item(s) to base diet.")
-                        st.rerun()
-
-                # ── Search by # ────────────────────────────────────
-                st.markdown("**Add base diet by #:**")
-                _num_col, _g_col = st.columns([1, 1])
-                with _num_col:
-                    _search_num = st.number_input(
-                        "#", min_value=1, max_value=9999, value=1,
-                        step=1, format="%d", key="v3_gnd_search_num",
-                        label_visibility="collapsed",
+                # ── Collapsable 2: Search by # ─────────────────────
+                with st.expander("🔢 Search by #", expanded=True):
+                    _num_opts = sorted(
+                        _fdf["Num"].dropna().astype(int).unique().tolist()
                     )
-                _num_match = _fdf[_fdf["Num"] == int(_search_num)]
-                if not _num_match.empty:
-                    _nm_row = _num_match.iloc[0]
-                    st.caption(f"#{int(_search_num)}: **{_nm_row['Name']}** "
-                               f"({_nm_row['Typ']} / {_nm_row['Kategorie']})")
-                    with _g_col:
+                    _num_to_name = {
+                        int(r["Num"]): r["Name"]
+                        for _, r in _fdf.dropna(subset=["Num"]).iterrows()
+                    }
+                    _search_num = st.selectbox(
+                        "Select by #",
+                        options=_num_opts,
+                        key="v3_gnd_search_num",
+                        label_visibility="collapsed",
+                        format_func=lambda n: f"#{n}  –  {_num_to_name.get(n, '')}",
+                    )
+                    _num_match = _fdf[_fdf["Num"] == int(_search_num)]
+                    if not _num_match.empty:
+                        _nm_row = _num_match.iloc[0]
+                        st.caption(
+                            f"Type: **{_nm_row['Typ']}** / Category: **{_nm_row['Kategorie']}**"
+                        )
                         _num_grams = st.number_input(
                             "g/day", min_value=0, max_value=5000,
                             value=100, step=1, format="%d",
                             key="v3_gnd_num_grams",
-                            label_visibility="collapsed",
                         )
-                    if st.button("➕ Add #", type="secondary", key="v3_gnd_add_num"):
-                        _bsk = list(st.session_state["v3_base_diet"])
-                        _pn = _nm_row["Name"]
-                        _bsk.append({
-                            "name": _pn,
-                            "num": int(_nm_row["Num"]),
-                            "identifier": str(_nm_row["Identifier"]),
-                            "grams": float(_num_grams),
-                            "nutrients": {c: float(_nm_row[c]) for c in _ft_nutr_cols},
-                        })
-                        st.session_state["v3_base_diet"] = _bsk
-                        st.success(f"✅ Added {_pn} ({int(_num_grams)}g).")
-                        st.rerun()
-                else:
-                    st.caption(f"No food item found for #{int(_search_num)}.")
+                        if st.button("➕ Add #", type="secondary", key="v3_gnd_add_num"):
+                            _bsk = list(st.session_state["v3_base_diet"])
+                            _pn = _nm_row["Name"]
+                            _bsk.append({
+                                "name": _pn,
+                                "num": int(_nm_row["Num"]),
+                                "identifier": str(_nm_row["Identifier"]),
+                                "grams": float(_num_grams),
+                                "nutrients": {c: float(_nm_row[c]) for c in _ft_nutr_cols},
+                            })
+                            st.session_state["v3_base_diet"] = _bsk
+                            st.success(f"✅ Added {_pn} ({int(_num_grams)}g).")
+                            st.rerun()
+                    else:
+                        st.caption(f"No food item found for #{int(_search_num)}.")
 
             # ── RIGHT: basket display ─────────────────────────────
             with gnd_right:
@@ -1911,11 +2025,13 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
 
             # ── Dynamic coverage display ──────────────────────────
             # Pre-compute coverage rows (shared by both expanders below)
-            _n_names_cov = get_nutrient_names_from_bedarf(_fb)
+            _fb_pw = st.session_state.get("v3_vt_password") or _VT_PASSWORD
+            _n_names_cov = get_nutrient_names_from_bedarf(_fb, password=_fb_pw)
             _sel_set_cov = st.session_state.get("v3_nutrient_selection", set())
             _sel_nts_cov = [n for n in _n_names_cov if n in _sel_set_cov]
             _cdf_now = st.session_state.get("constraints_edit_df")
-            _nu_cov = get_futtermittel_nutrient_units(_fb)
+            _nu_cov = {**get_futtermittel_nutrient_units(_fb, password=_fb_pw),
+                       **st.session_state.get("v3_custom_units", {})}
             _cov_rows = []
             if _sel_nts_cov and _cdf_now is not None:
                 for _n in _sel_nts_cov:
@@ -1947,15 +2063,34 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
                         "Status":    _status,
                     })
 
+            # ── ME (Daily Energy) row in coverage table ───────────────────────
+            _ME_FOOD_COL = "met. Energie berechnet Hund/Katze (NRC)"
+            _me_req_cov = st.session_state.get("v3_me_req")
+            if _me_req_cov is not None:
+                _me_diet_total = _base_totals.get(_ME_FOOD_COL, 0.0)
+                _me_pct_cov = (_me_diet_total / _me_req_cov * 100.0) if _me_req_cov > 0 else 0.0
+                _me_status = "⬆️ Above" if _me_diet_total >= _me_req_cov - 1e-9 else "⬇️ Below"
+                _cov_rows.insert(0, {
+                    "Nutrient":  "⚡ Daily Energy (ME)",
+                    "Unit":      "MJ",
+                    "Min":       round(_me_req_cov, 3),
+                    "Base Diet": round(_me_diet_total, 3),
+                    "Max":       None,
+                    "% of Min":  round(min(_me_pct_cov, 100.0), 1),
+                    "Status":    _me_status,
+                })
+
             _base_diet_exceeds_max = [r["Nutrient"] for r in _cov_rows if r["Status"] == "🔴 Exceeds Max"]
 
             st.markdown('<hr style="margin-top:0.25rem;margin-bottom:0.5rem;border:none;border-top:1px solid #e5e7eb;">', unsafe_allow_html=True)
             with st.expander("🔍 Food Nutrient Lookup Table (per 100g)", expanded=False):
-                _nu_lu = get_futtermittel_nutrient_units(_fb)
+                _nu_lu = {**get_futtermittel_nutrient_units(_fb, password=_fb_pw),
+                          **st.session_state.get("v3_custom_units", {})}
                 _lu_filter = st.text_input(
                     "Search by name or #", key="v3_lu_filter",
                     placeholder="Type to search…",
                 )
+                # Exclude the mostly-empty raw ME column; the NRC-calculated column stays visible
                 _lu_nutr_cols = [c for c in _ft_nutr_cols if c != "met. Energie"]
 
                 if "v3_price_overrides" not in st.session_state:
@@ -2045,21 +2180,41 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
                             "Status":    st.column_config.TextColumn(width="small"),
                         },
                     )
-                    _n_met = sum(1 for r in _cov_rows if r["Status"] == "✅ ≥ Min")
-                    st.markdown(f"**{_n_met} / {len(_cov_rows)} nutrients fully covered by base diet.**")
+                    _nutrient_rows = [r for r in _cov_rows if r["Nutrient"] != "⚡ Daily Energy (ME)"]
+                    _n_met = sum(1 for r in _nutrient_rows if r["Status"] == "✅ ≥ Min")
+                    st.markdown(f"**{_n_met} / {len(_nutrient_rows)} nutrients fully covered by base diet.**")
                 else:
                     st.info("No matching nutrients found in coverage table.")
 
-            with st.expander("🔬 Nutrient Contribution Breakdown", expanded=True):
+            with st.expander("🔬 Base Diet Nutrient Contribution", expanded=True):
                 if not _sel_nts_cov or _cdf_now is None:
                     st.info("📌 Calculate requirements first to see nutrient breakdown.")
                 elif not _bsk:
                     st.info("Add food items to the base diet to see the breakdown.")
                 elif _cov_rows:
                     _bk_labels = [f"{it['name']} ({int(it['grams'])}g)" for it in _bsk]
-                    _nu_bk = get_futtermittel_nutrient_units(_fb)
+                    _nu_bk = {**get_futtermittel_nutrient_units(_fb, password=_fb_pw),
+                              **st.session_state.get("v3_custom_units", {})}
 
                     _breakdown_rows = []
+
+                    # ME row first ─────────────────────────────────────
+                    _ME_FOOD_COL_BD = "met. Energie berechnet Hund/Katze (NRC)"
+                    _me_req_bd = st.session_state.get("v3_me_req")
+                    _me_bd_row = {"Nutrient": "⚡ Daily Energy (ME)", "Unit": "MJ"}
+                    _me_bd_total = 0.0
+                    for _it, _lbl in zip(_bsk, _bk_labels):
+                        _g     = float(_it.get("grams", 0.0))
+                        _me_v  = float(_it.get("nutrients", {}).get(_ME_FOOD_COL_BD, 0.0) or 0.0)
+                        _me_c  = round(_me_v * _g / 100.0, 3)
+                        _me_bd_row[_lbl] = _me_c
+                        _me_bd_total += _me_c
+                    _me_bd_row["Total"] = round(_me_bd_total, 3)
+                    if _me_req_bd is not None:
+                        _me_bd_row["Requirement"] = round(_me_req_bd, 3)
+                    _breakdown_rows.append(_me_bd_row)
+
+                    # Regular nutrients ─────────────────────────────────
                     for _n in _sel_nts_cov:
                         _row = {"Nutrient": _n, "Unit": _nu_bk.get(_n, "")}
                         _total = 0.0
@@ -2069,6 +2224,8 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
                             _row[_lbl] = round(_val, 2)
                             _total += _val
                         _row["Total"] = round(_total, 2)
+                        if _me_req_bd is not None:
+                            _row["Requirement"] = None   # keep column consistent
                         _breakdown_rows.append(_row)
 
                     if _breakdown_rows:
@@ -2077,9 +2234,13 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
                             lbl: st.column_config.NumberColumn(lbl, format="%.2f")
                             for lbl in _bk_labels
                         }
-                        _food_col_cfg["Nutrient"] = st.column_config.TextColumn(width="medium")
-                        _food_col_cfg["Unit"]     = st.column_config.TextColumn("Unit", width="small")
-                        _food_col_cfg["Total"]    = st.column_config.NumberColumn("Total", format="%.2f", width="small")
+                        _food_col_cfg["Nutrient"]    = st.column_config.TextColumn(width="medium")
+                        _food_col_cfg["Unit"]        = st.column_config.TextColumn("Unit", width="small")
+                        _food_col_cfg["Total"]       = st.column_config.NumberColumn("Total", format="%.3f", width="small")
+                        if _me_req_bd is not None:
+                            _food_col_cfg["Requirement"] = st.column_config.NumberColumn(
+                                "Requirement (MJ)", format="%.3f", width="small"
+                            )
                         st.dataframe(
                             _bd_df,
                             use_container_width=True,
@@ -2174,7 +2335,7 @@ with st.expander("🛂 Data Check (expand)", expanded=True):
     if _base_diet_exceeds_max:
         st.info("❌ Adjust the base diet (maximum exceeded) before Data Check becomes available.")
     elif status_ok and ("constraints_edit_df" in st.session_state) and (supplements is not None):
-        st.markdown("#### 🔁 Nutrient Matching (Requirements ↔ Supplement DB)")
+        st.markdown("#### 🔁 Nutrient Matching (CarniDiet© ↔ Supplement DB)")
         st.markdown(
             "<div class='caption-note'>Only nutrients that couldn't be matched automatically need manual assignment.</div>",
             unsafe_allow_html=True,
@@ -2370,12 +2531,12 @@ with st.expander("🛂 Data Check (expand)", expanded=True):
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Ration Nutrient":   st.column_config.TextColumn("Requirement Nutrient", width="medium"),
-                    "Req. Unit":         st.column_config.TextColumn("Req. Unit", width="small"),
+                    "Ration Nutrient":   st.column_config.TextColumn("CarniDiet© Nutrient", width="medium"),
+                    "Req. Unit":         st.column_config.TextColumn("CarniDiet© Unit", width="small"),
                     "Supplement Column": st.column_config.TextColumn("Supplement Column", width="medium"),
-                    "Supp. Unit":        st.column_config.TextColumn("Supp. Unit", width="small"),
-                    "Unit":              st.column_config.TextColumn("Unit", width="small"),
-                    "Status":            st.column_config.TextColumn("Status", width="small"),
+                    "Supp. Unit":        st.column_config.TextColumn("Supplement Unit", width="small"),
+                    "Unit":              st.column_config.TextColumn("Unit Match", width="small"),
+                    "Status":            st.column_config.TextColumn("Match", width="small"),
                 },
             )
     else:
@@ -2650,39 +2811,82 @@ with st.expander("Optimization (expand)", expanded=True):
                     "by_s":      _nc_by_s[_n],
                 })
 
-            # shared layout helper
+            _MAX_CAP_PCT = 1500.0   # hard cap for max markers in the chart
+
+            # shared layout helper — returns True if any max marker was capped
             def _apply_chart_layout(fig, data, h_per_row=26):
-                # x-axis must fit both the bars (total_pct) and the max markers (max_pct)
-                _x_candidates = [d["total_pct"] for d in data]
-                _x_candidates += [d["max_pct"] for d in data if d["max_pct"] is not None]
-                _x_ceil = max(max(_x_candidates) * 1.08 if _x_candidates else 130, 130)
-                # min — dashed orange vertical line (full height)
+                _bar_vals = [d["total_pct"] for d in data]
+                _bar_ceil = max(max(_bar_vals) * 1.15 if _bar_vals else 130, 130)
+
+                # x-axis extends to show all max values, capped at _MAX_CAP_PCT
+                _vis_maxes = [min(d["max_pct"], _MAX_CAP_PCT)
+                              for d in data if d["max_pct"] is not None]
+                _x_ceil = max(_bar_ceil,
+                              max(_vis_maxes) * 1.04 if _vis_maxes else 0)
+
+                # min — solid orange vertical line (full height)
                 fig.add_vline(
-                    x=100, line_dash="dash",
+                    x=100, line_dash="solid",
                     line_color="rgba(234,137,0,0.9)", line_width=2,
                     annotation_text="Min", annotation_position="top right",
-                    annotation_font=dict(color="rgba(234,137,0,1)", size=11),
+                    annotation_font=dict(color="rgba(234,137,0,1)", size=13),
                 )
-                # max — dashed red vertical tick per nutrient (same visual style as min)
+
+                # max — solid red tick per nutrient, capped at _MAX_CAP_PCT
+                _max_labeled = False
+                _any_capped  = False
                 for _i, d in enumerate(data):
-                    if d["max_pct"] is not None:
-                        fig.add_shape(
-                            type="line",
-                            x0=d["max_pct"], x1=d["max_pct"],
-                            y0=_i - 0.44, y1=_i + 0.44,
-                            line=dict(color="rgba(220,38,38,0.9)", width=2, dash="dash"),
+                    if d["max_pct"] is None:
+                        continue
+                    _is_capped = d["max_pct"] > _MAX_CAP_PCT
+                    _draw_x    = min(d["max_pct"], _MAX_CAP_PCT)
+                    if _is_capped:
+                        _any_capped = True
+                    fig.add_shape(
+                        type="line",
+                        x0=_draw_x, x1=_draw_x,
+                        y0=_i - 0.44, y1=_i + 0.44,
+                        line=dict(color="rgba(220,38,38,0.9)", width=2),
+                    )
+                    if _is_capped:
+                        fig.add_annotation(
+                            x=_draw_x, y=d["display"],
+                            xref="x", yref="y",
+                            text=">1500%",
+                            showarrow=False,
+                            font=dict(color="rgba(220,38,38,0.85)", size=11),
+                            xanchor="left", yanchor="middle",
+                            xshift=4,
                         )
+                    elif not _max_labeled:
+                        fig.add_annotation(
+                            x=_draw_x, y=d["display"],
+                            xref="x", yref="y",
+                            text="Max",
+                            showarrow=False,
+                            font=dict(color="rgba(220,38,38,1)", size=13),
+                            xanchor="left", yanchor="middle",
+                            xshift=5,
+                        )
+                        _max_labeled = True
+
                 fig.update_layout(
                     barmode="stack",
                     xaxis_title="% of minimum requirement",
-                    xaxis=dict(range=[0, _x_ceil]),
+                    xaxis=dict(
+                        range=[0, _x_ceil],
+                        tickfont=dict(size=13),
+                        title_font=dict(size=13),
+                    ),
                     height=max(340, len(data) * h_per_row + 90),
                     margin=dict(l=10, r=130, t=10, b=50),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                                xanchor="left", x=0, font=dict(size=13)),
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
-                    yaxis=dict(autorange="reversed"),
+                    yaxis=dict(autorange="reversed", tickfont=dict(size=16)),
                 )
+                return _any_capped
 
             _STATUS_COLORS = {
                 "ok":    "rgba(66,133,244,0.80)",
@@ -2746,20 +2950,49 @@ with st.expander("Optimization (expand)", expanded=True):
                     ))
                     for _ai, (_ad, _albl) in enumerate(zip(_ch_data, _txt_labels)):
                         _fig.add_annotation(
-                            x=1.01, y=_ad["display"],
+                            x=1.28, y=_ad["display"],
                             xref="paper", yref="y",
                             text=_albl, showarrow=False,
-                            font=dict(size=12, color="#111"),
+                            font=dict(size=15, color="#111"),
                             align="left", xanchor="left",
                         )
-                    _apply_chart_layout(_fig, _ch_data, h_per_row=30)
-                    _fig.update_layout(margin=dict(l=10, r=420, t=10, b=50))
+                    _capped = _apply_chart_layout(_fig, _ch_data, h_per_row=30)
+                    _fig.update_layout(margin=dict(l=10, r=460, t=10, b=50))
                     st.plotly_chart(_fig, use_container_width=True)
-                    st.caption(
-                        "🟩 Base diet · 🟦 Supplements (ok) · 🔴 below min · 🟧 above max · "
-                        "— dashed orange = Min · — dashed red = Max · "
-                        "label: <b>total</b> [min, max] in original units"
+                    def _lp(bg, bd, txt):
+                        return (
+                            "<span style='background:" + bg + ";border:1px solid " + bd + ";"
+                            "padding:2px 10px;border-radius:12px;'>" + txt + "</span>"
+                        )
+                    def _lline(bg, bd, label):
+                        return (
+                            "<span style='display:inline-flex;align-items:center;gap:5px;"
+                            "background:" + bg + ";border:1px solid " + bd + ";"
+                            "padding:2px 10px;border-radius:12px;'>"
+                            "<span style='display:inline-block;width:18px;height:2px;"
+                            "background:" + bd + ";'></span>" + label + "</span>"
+                        )
+                    _legend_html = (
+                        "<div style='display:flex;flex-wrap:wrap;gap:5px 7px;"
+                        "margin-top:0.25rem;margin-bottom:0.5rem;"
+                        "font-size:0.84rem;align-items:center;'>"
+                        + _lp("rgba(52,168,83,0.15)",  "rgba(52,168,83,0.50)",  "🟩 Base diet")
+                        + _lp("rgba(66,133,244,0.15)", "rgba(66,133,244,0.50)", "🟦 Supplements (ok)")
+                        + _lp("rgba(220,38,38,0.12)",  "rgba(220,38,38,0.45)",  "🔴 Below min")
+                        + _lp("rgba(234,137,0,0.12)",  "rgba(234,137,0,0.45)",  "🟧 Above max")
+                        + _lline("rgba(234,137,0,0.08)", "rgba(234,137,0,0.9)", "Min")
+                        + _lline("rgba(220,38,38,0.08)", "rgba(220,38,38,0.9)", "Max")
+                        + _lp("rgba(100,100,100,0.06)", "rgba(100,100,100,0.25)",
+                               "label: <b>total</b> [min, max] in original units")
+                        + "</div>"
                     )
+                    if _capped:
+                        _legend_html += (
+                            "<div style='font-size:0.78rem;color:rgba(160,50,50,0.85);"
+                            "margin-top:-0.15rem;margin-bottom:0.55rem;'>"
+                            "Max values &gt;1500 % of min are capped at 1500 % in the chart.</div>"
+                        )
+                    st.markdown(_legend_html, unsafe_allow_html=True)
 
                 # ── Mode 2: per supplement ────────────────────────────
                 else:
@@ -2798,20 +3031,47 @@ with st.expander("Optimization (expand)", expanded=True):
                         ))
                     for _ai, (_ad, _albl) in enumerate(zip(_ch_data, _txt_labels)):
                         _fig.add_annotation(
-                            x=1.01, y=_ad["display"],
+                            x=1.28, y=_ad["display"],
                             xref="paper", yref="y",
                             text=_albl, showarrow=False,
-                            font=dict(size=12, color="#111"),
+                            font=dict(size=15, color="#111"),
                             align="left", xanchor="left",
                         )
-                    _apply_chart_layout(_fig, _ch_data, h_per_row=28)
-                    _fig.update_layout(margin=dict(l=10, r=420, t=10, b=50))
+                    _capped = _apply_chart_layout(_fig, _ch_data, h_per_row=28)
+                    _fig.update_layout(margin=dict(l=10, r=460, t=10, b=50))
                     st.plotly_chart(_fig, use_container_width=True)
-                    st.caption(
-                        "🟩 Base diet · each other color = one supplement · "
-                        "— dashed orange = Min · — dashed red = Max · "
-                        "label: <b>total</b> [min, max] in original units"
+                    def _lp2(bg, bd, txt):
+                        return (
+                            "<span style='background:" + bg + ";border:1px solid " + bd + ";"
+                            "padding:2px 10px;border-radius:12px;'>" + txt + "</span>"
+                        )
+                    def _lline2(bg, bd, label):
+                        return (
+                            "<span style='display:inline-flex;align-items:center;gap:5px;"
+                            "background:" + bg + ";border:1px solid " + bd + ";"
+                            "padding:2px 10px;border-radius:12px;'>"
+                            "<span style='display:inline-block;width:18px;height:2px;"
+                            "background:" + bd + ";'></span>" + label + "</span>"
+                        )
+                    _legend_html2 = (
+                        "<div style='display:flex;flex-wrap:wrap;gap:5px 7px;"
+                        "margin-top:0.25rem;margin-bottom:0.5rem;"
+                        "font-size:0.84rem;align-items:center;'>"
+                        + _lp2("rgba(52,168,83,0.15)",   "rgba(52,168,83,0.50)",    "🟩 Base diet")
+                        + _lp2("rgba(100,100,100,0.08)", "rgba(100,100,100,0.30)",  "🎨 each color = one supplement")
+                        + _lline2("rgba(234,137,0,0.08)", "rgba(234,137,0,0.9)",    "Min")
+                        + _lline2("rgba(220,38,38,0.08)", "rgba(220,38,38,0.9)",    "Max")
+                        + _lp2("rgba(100,100,100,0.06)", "rgba(100,100,100,0.25)",
+                                "label: <b>total</b> [min, max] in original units")
+                        + "</div>"
                     )
+                    if _capped:
+                        _legend_html2 += (
+                            "<div style='font-size:0.78rem;color:rgba(160,50,50,0.85);"
+                            "margin-top:-0.15rem;margin-bottom:0.55rem;'>"
+                            "&#8224; Max values &gt;1500 % of min are capped at 1500 % in the chart.</div>"
+                        )
+                    st.markdown(_legend_html2, unsafe_allow_html=True)
 
                 # ── Absolute values table (always shown) ──────────────
                 st.markdown("#### 📋 Nutrient Coverage Table")
@@ -2896,12 +3156,34 @@ with st.expander("Optimization (expand)", expanded=True):
                     "Total":    st.column_config.NumberColumn("Total",  format="%.4g", width="small"),
                     "Status":   st.column_config.TextColumn("Status",   width="small"),
                 }
-                for _fkey, _ in _food_cols:
+                _food_col_names = [k for k, _ in _food_cols]
+                _supp_col_names = list(_supp_col_keys.values())
+                for _fkey in _food_col_names:
                     _col_cfg_abs[_fkey] = st.column_config.NumberColumn(_fkey, format="%.4g", width="small")
-                for _skey in _supp_col_keys.values():
+                for _skey in _supp_col_names:
                     _col_cfg_abs[_skey] = st.column_config.NumberColumn(_skey, format="%.4g", width="small")
-                st.dataframe(_abs_df, use_container_width=True, hide_index=True,
+
+                # ── Column colour coding ───────────────────────────
+                def _abs_col_style(col):
+                    if col.name in _food_col_names:
+                        return ["background-color: rgba(40,167,69,0.13)"] * len(col)
+                    if col.name in _supp_col_names:
+                        return ["background-color: rgba(13,110,253,0.11)"] * len(col)
+                    return [""] * len(col)
+
+                _abs_styled = _abs_df.style.apply(_abs_col_style, axis=0)
+                st.dataframe(_abs_styled, use_container_width=True, hide_index=True,
                              column_config=_col_cfg_abs)
+                st.markdown(
+                    "<div style='font-size:0.82rem;opacity:0.75;"
+                    "margin-top:-0.5rem;margin-bottom:0.85rem;'>"
+                    "<span style='background:rgba(40,167,69,0.22);padding:1px 7px;"
+                    "border-radius:4px;margin-right:6px;'>🟩 Base Diet</span>"
+                    "<span style='background:rgba(13,110,253,0.18);padding:1px 7px;"
+                    "border-radius:4px;'>🟦 Supplements</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
 
     with st.expander("📊 Summary Table", expanded=False):
         nutrient_cols = debug.get("nutrient_cols", [])
@@ -2949,7 +3231,250 @@ with st.expander("Optimization (expand)", expanded=True):
                              "Status":                   st.column_config.TextColumn(width="small"),
                          })
 
-    # try:
-    #     st.image("static/pikachu.jpg", width=230)
-    # except Exception:
-    #     pass
+    # ── Final Meal Plan ──────────────────────────────────────────────────────
+    with st.expander("🍽️ Final Meal Plan", expanded=False):
+        _fmp_res = st.session_state.get("opt_result")
+        _fmp_bsk = st.session_state.get("v3_base_diet", [])
+        if _fmp_res is None:
+            st.info("Run the optimizer first to generate a meal plan.")
+        else:
+            _fmp_sol    = _fmp_res["solution"]          # {supp_name: kg/day}
+            _fmp_sc     = _fmp_res["debug"].get("supp_clean")
+            _fmp_fb     = st.session_state.get("v3_file_bytes")
+            _fmp_pw     = st.session_state.get("v3_vt_password") or _VT_PASSWORD
+            _fmp_fdf    = (parse_futtermittel_sheet(_fmp_fb, password=_fmp_pw)
+                           if _fmp_fb else pd.DataFrame())
+
+            # Build item list ─────────────────────────────────────────────
+            _fmp_items: list = []
+
+            for _bi in _fmp_bsk:
+                _bn    = _bi["name"]
+                _g_day = float(_bi.get("grams", 0.0))
+                if _g_day <= 0:
+                    continue
+                _fmatch = (_fmp_fdf[_fmp_fdf["Name"] == _bn]
+                           if not _fmp_fdf.empty else pd.DataFrame())
+                _bp = None
+                if not _fmatch.empty:
+                    try:
+                        _bp = float(_fmatch.iloc[0]["Preis (€/kg)"])
+                    except (TypeError, ValueError, KeyError):
+                        _bp = None
+                _fmp_items.append({
+                    "name":     _bn,
+                    "g_day":    _g_day,
+                    "cost_day": (_g_day / 1000.0) * _bp if _bp is not None else None,
+                    "days_1kg": 1000.0 / _g_day,
+                    "type":     "base",
+                })
+
+            for _sn, _s_kg in _fmp_sol.items():
+                _g_day = _s_kg * 1000.0
+                if _g_day <= 0:
+                    continue
+                _sp = None
+                if _fmp_sc is not None and _sn in _fmp_sc.index:
+                    try:
+                        _sp = float(_fmp_sc.loc[_sn, "Preis (€) pro kg"])
+                    except (TypeError, ValueError, KeyError):
+                        _sp = None
+                _fmp_items.append({
+                    "name":     _sn,
+                    "g_day":    _g_day,
+                    "cost_day": _s_kg * _sp if _sp is not None else None,
+                    "days_1kg": 1000.0 / _g_day,
+                    "type":     "supp",
+                })
+
+            if not _fmp_items:
+                st.info("No items in the meal plan yet.")
+            else:
+                # ── Meals per day inputs ──────────────────────────────────
+                st.markdown(
+                    "<p style='font-weight:600;margin-bottom:1rem;'>"
+                    "Meals per day for each item</p>",
+                    unsafe_allow_html=True,
+                )
+                _fmp_ms_ss   = st.session_state.get("v3_fmp_meals", {})
+                _fmp_new_ms  = {}
+                _base_items  = [it for it in _fmp_items if it["type"] == "base"]
+                _supp_items  = [it for it in _fmp_items if it["type"] == "supp"]
+
+                if _base_items:
+                    with st.expander("🟩 Base Diet", expanded=True):
+                        _bc = st.columns(min(len(_base_items), 4))
+                        for _i, _bit in enumerate(_base_items):
+                            _bn = _bit["name"]
+                            with _bc[_i % len(_bc)]:
+                                _fmp_new_ms[_bn] = st.number_input(
+                                    _bn, min_value=1, max_value=10,
+                                    value=int(_fmp_ms_ss.get(_bn, 1)),
+                                    step=1, key=f"v3_fmp_m_bd_{_i}",
+                                )
+
+                if _supp_items:
+                    with st.expander("🟦 Supplements", expanded=True):
+                        _sc2 = st.columns(min(len(_supp_items), 4))
+                        for _i, _sit in enumerate(_supp_items):
+                            _sn = _sit["name"]
+                            with _sc2[_i % len(_sc2)]:
+                                _fmp_new_ms[_sn] = st.number_input(
+                                    _sn, min_value=1, max_value=10,
+                                    value=int(_fmp_ms_ss.get(_sn, 1)),
+                                    step=1, key=f"v3_fmp_m_s_{_i}",
+                                )
+
+                st.session_state["v3_fmp_meals"] = _fmp_new_ms
+
+                # ── Build rows + collect warnings ─────────────────────────
+                _fmp_rows  = []
+                _fmp_warns = []
+                for _it in _fmp_items:
+                    _nm     = _it["name"]
+                    _g_day  = _it["g_day"]
+                    _meals  = _fmp_new_ms.get(_nm, 1)
+                    _g_meal = _g_day / _meals
+                    if _g_meal < 1.0:
+                        _fmp_warns.append((_nm, _g_day, _meals, _g_meal))
+                    _fmp_rows.append({
+                        "_type":               _it["type"],
+                        "Name":                _nm,
+                        "Daily portion (g)":   round(_g_day, 1),
+                        "Meals / day":         _meals,
+                        "Per meal (g)":        round(_g_meal, 1),
+                        "Cost / day (€)":      (round(_it["cost_day"], 2)
+                                               if _it["cost_day"] is not None else None),
+                        "Days supply (1 kg)":  round(_it["days_1kg"], 0),
+                    })
+
+                # ── Warnings ──────────────────────────────────────────────
+                for _wn, _wg, _wm, _wg_m in _fmp_warns:
+                    _max_ok = int(_wg)      # floor: this many meals each ≥ 1 g
+                    if _max_ok == 0:
+                        st.warning(
+                            f"⚠️ **{_wn}**: daily portion is only **{_wg:.2f} g** — "
+                            "even a single meal would be below the 1 g minimum."
+                        )
+                    else:
+                        _mpl = "meal" if _max_ok == 1 else "meals"
+                        st.warning(
+                            f"⚠️ **{_wn}**: {_wg:.1f} g/day ÷ {_wm} meals "
+                            f"= **{_wg_m:.2f} g/meal** — below the 1 g minimum. "
+                            f"Use at most **{_max_ok} {_mpl}/day** for this item."
+                        )
+
+                # ── Daily Energy (ME) summary card ───────────────────────
+                _fmp_me_req = st.session_state.get("v3_me_req")
+                if _fmp_me_req is not None:
+                    _ME_COL = "met. Energie berechnet Hund/Katze (NRC)"
+                    _fmp_bsk_ss = st.session_state.get("v3_base_diet", [])
+                    _fmp_me_base = sum(
+                        float(_bi.get("nutrients", {}).get(_ME_COL, 0.0) or 0.0)
+                        * float(_bi.get("grams", 0.0)) / 100.0
+                        for _bi in _fmp_bsk_ss
+                    )
+                    _fmp_me_diff = _fmp_me_base - _fmp_me_req
+                    _diff_arrow = "▲" if _fmp_me_diff >= 0 else "▼"
+                    _diff_word  = "above" if _fmp_me_diff >= 0 else "below"
+                    st.markdown(
+                        "<div style='background:rgba(28,131,225,0.06);"
+                        "border:1px solid rgba(28,131,225,0.22);"
+                        "border-radius:0.6rem;padding:0.55rem 1rem;"
+                        "margin-bottom:0.8rem;'>"
+                        "<div style='font-weight:600;font-size:0.95rem;"
+                        "color:#19425e;margin-bottom:0.3rem;'>⚡ Daily Energy (ME)</div>"
+                        "<div style='display:flex;gap:2rem;flex-wrap:wrap;font-size:0.9rem;'>"
+                        f"<span>Reference value: <b>{_fmp_me_req:.3f} MJ</b></span>"
+                        f"<span>🟩 Base diet: <b>{_fmp_me_base:.3f} MJ</b></span>"
+                        "<span style='color:#dc2626;font-weight:600;'>"
+                        f"<span style='font-size:1.1rem;vertical-align:middle;'>{_diff_arrow}</span>"
+                        f"&nbsp;{abs(_fmp_me_diff):.3f} MJ {_diff_word} reference"
+                        "</span>"
+                        "</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                # ── Color-coded table ─────────────────────────────────────
+                _fmp_display = pd.DataFrame([
+                    {k: v for k, v in r.items() if k != "_type"}
+                    for r in _fmp_rows
+                ])
+                _fmp_types   = [r["_type"] for r in _fmp_rows]
+
+                def _fmp_row_style(row):
+                    if _fmp_types[row.name] == "base":
+                        return ["background-color: rgba(52,168,83,0.13)"] * len(row)
+                    return ["background-color: rgba(66,133,244,0.11)"] * len(row)
+
+                st.dataframe(
+                    _fmp_display.style.apply(_fmp_row_style, axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Name":               st.column_config.TextColumn("Name", width="large"),
+                        "Daily portion (g)":  st.column_config.NumberColumn(
+                            "Daily portion (g)", format="%.1f", width="small"),
+                        "Meals / day":        st.column_config.NumberColumn(
+                            "Meals / day", format="%.0f", width="small"),
+                        "Per meal (g)":       st.column_config.NumberColumn(
+                            "Per meal (g)", format="%.1f", width="small"),
+                        "Cost / day (€)":     st.column_config.NumberColumn(
+                            "Cost / day (€)", format="%.2f", width="small"),
+                        "Days supply (1 kg)": st.column_config.NumberColumn(
+                            "Days supply (1 kg)", format="%.0f", width="small"),
+                    },
+                )
+                st.markdown(
+                    "<div style='font-size:0.82rem;opacity:0.75;"
+                    "margin-top:-0.5rem;margin-bottom:0.7rem;'>"
+                    "<span style='background:rgba(52,168,83,0.22);padding:1px 7px;"
+                    "border-radius:4px;margin-right:6px;'>🟩 Base Diet</span>"
+                    "<span style='background:rgba(66,133,244,0.18);padding:1px 7px;"
+                    "border-radius:4px;'>🟦 Supplements</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+                # ── Excel export ──────────────────────────────────────────
+                _fmp_export = _fmp_display.copy()
+                _fmp_type_labels = [
+                    "Base Diet" if t == "base" else "Supplement"
+                    for t in _fmp_types
+                ]
+                _fmp_export.insert(0, "Type", _fmp_type_labels)
+
+                _fmp_buf = io.BytesIO()
+                with pd.ExcelWriter(_fmp_buf, engine="openpyxl") as _xl_writer:
+                    _fmp_export.to_excel(_xl_writer, index=False,
+                                         sheet_name="Meal Plan")
+                    _xl_ws = _xl_writer.sheets["Meal Plan"]
+                    from openpyxl.styles import PatternFill, Font
+                    _xl_green = PatternFill(start_color="D4EDDA",
+                                            end_color="D4EDDA", fill_type="solid")
+                    _xl_blue  = PatternFill(start_color="D0E4FF",
+                                            end_color="D0E4FF", fill_type="solid")
+                    _xl_bold  = Font(bold=True)
+                    for _xl_cell in _xl_ws[1]:
+                        _xl_cell.font = _xl_bold
+                    for _xl_ri, _xl_t in enumerate(_fmp_type_labels, start=2):
+                        _xl_fill = _xl_green if _xl_t == "Base Diet" else _xl_blue
+                        for _xl_cell in _xl_ws[_xl_ri]:
+                            _xl_cell.fill = _xl_fill
+                    for _xl_col in _xl_ws.columns:
+                        _xl_w = max(len(str(_xl_cell.value or ""))
+                                    for _xl_cell in _xl_col)
+                        _xl_ws.column_dimensions[
+                            _xl_col[0].column_letter].width = min(_xl_w + 3, 42)
+                _fmp_buf.seek(0)
+
+                st.download_button(
+                    "📥 Export as Excel",
+                    data=_fmp_buf,
+                    file_name="final_meal_plan.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                )
