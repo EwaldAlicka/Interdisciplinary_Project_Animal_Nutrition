@@ -10,6 +10,8 @@
 # - Original Excel is never modified (temp-copy approach)
 # ============================================================
 
+import base64
+import hashlib
 import io
 import math
 import os
@@ -49,6 +51,10 @@ st.set_page_config(page_title="Animal Nutrition Optimizer", layout="wide")
 st.markdown(
     """
     <style>
+    .block-container{padding-top:1.5rem!important;}
+    section[data-testid="stMain"] .block-container{padding-top:1.5rem!important;}
+    div[data-testid="column"]:last-child div[data-testid="stImage"]{display:flex;justify-content:flex-end;}
+    div[data-testid="column"]:last-child div[data-testid="stImage"] img{margin-left:auto;}
     :root{
       --btn_primary_font: 1.50rem; --btn_primary_weight: 600;
       --btn_primary_py: 0.55rem;  --btn_primary_px: 0.90rem;
@@ -112,8 +118,13 @@ st.markdown(
       border:1px solid rgba(49,51,63,0.12);background:rgba(49,51,63,0.05);}
     .kpi-title{font-size:1.05rem;font-weight:700;opacity:0.85;}
     .kpi-value{font-size:2.2rem;font-weight:900;margin-top:4px;line-height:1.05;}
-    div:has(#ft-sm-btn-marker) ~ div button[kind="secondary"]{
+    div[data-testid="stVerticalBlock"]:has(#ft-sm-btn-marker) button[kind="secondary"]{
       font-size:0.85rem!important;padding:0.1rem 0.4rem!important;min-height:auto!important;}
+    div[data-testid="stFileUploader"] button[kind="secondary"],
+    section[data-testid="stFileUploaderDropzone"] button[kind="secondary"]{
+      --btn_secondary_font:1.4rem;
+      --btn_secondary_py:0.55rem;
+      --btn_secondary_px:1.3rem;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -141,27 +152,53 @@ _st_components.html("""
 # ------------------------------------------------------------
 # 1) HEADER
 # ------------------------------------------------------------
-col_left, col_right = st.columns([6, 1])
+#st.title("🐾💊 Animal Nutrition Optimizer feat. CarniDiet©")
+#st.image("static/Vetmedlogo.png", width="stretch")
+
+col_left, col_right = st.columns([4, 1.5])
 with col_left:
-    st.title("🐾💊 Animal Nutrition Optimizer")
+    #st.title("🐾💊 Animal Nutrition Optimizer feat. CarniDiet©")
+    try:
+        _bowl_b64 = base64.b64encode(open("static/dog-bowl.svg", "rb").read()).decode()
+        _bowl_img = f"<img src='data:image/svg+xml;base64,{_bowl_b64}' style='height:2.8rem;vertical-align:middle;margin-right:0.3rem;margin-left:-0.5rem;'>"
+        _catdog_b64 = base64.b64encode(open("static/cat-dog.svg", "rb").read()).decode()
+        _catdog_img = f"<img src='data:image/svg+xml;base64,{_catdog_b64}' style='height:2.8rem;vertical-align:middle;margin-right:0.3rem;position:relative;top:-0.6rem;'>"
+    except Exception:
+        _bowl_img = ""
+        _catdog_img = ""
+    st.markdown(
+        f'<h1 style="font-size:2.5rem;font-weight:800;margin:0;color:#19425e;">{_catdog_img}{_bowl_img} Animal Nutrition Optimizer '
+        '<span style="font-size:1.25rem;font-weight:400;color:#3a7fc1;vertical-align:baseline;">'
+        'feat. CarniDiet©</span></h1>',
+        unsafe_allow_html=True,
+    )
 with col_right:
     try:
-        st.image("static/Vetmedlogo.png", width="stretch")
+        _logo_b64 = base64.b64encode(open("static/Vetmedlogo.png", "rb").read()).decode()
+        st.markdown(
+            f"<div style='text-align:right;margin-top:1.3rem;'>"
+            f"<img src='data:image/png;base64,{_logo_b64}' width='120'>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
     except Exception:
         pass
     st.markdown(
-        "<div style='text-align:right;'>Univ.-Prof. Dr. Qendrim Zebeli</div>",
+        "<div style='text-align:right;font-size:0.75rem;line-height:1.3;'>Univ.-Prof. Dr. Qendrim Zebeli</div>",
         unsafe_allow_html=True,
     )
+st.markdown(
+    "<div style='text-align:left;'><div style='background:rgba(28,131,225,0.12);border:1px solid rgba(28,131,225,0.35);"
+    "border-radius:0.5rem;padding:0.75rem 1rem;font-size:0.95rem;line-height:1.4;color:#5385a6;font-weight:600;display:inline-block;text-align:left;'>"
+    #"ℹ️ CarniDiet© ist ausschließlich zu Übungszwecken für Studierende der Vetmeduni Vienna genehmigt. "
+    "<span style='line-height:0;display:block;margin-top:5px;margin-bottom:0.6rem;'>ℹ️ CarniDiet© ist ausschließlich zu Übungszwecken für Studierende der Vetmeduni Vienna genehmigt.</span>"
+    "Die Weitergabe, kommerz. Nutzung und Vervielfältigung des Programms ist nicht gestattet.<br>"
+    "<span style='line-height:0;display:block;margin-top:17px;'>Erstellt von: Prof. Zebeli/Dr. Lucke</span>"
+    "<span style='line-height:0;display:block;margin-top:17px;margin-bottom:0.3rem;'>Tierernährung Vetmeduni Wien</span>"
+    "</div></div>",
+    unsafe_allow_html=True,
+)
 
-
-if not _XLWINGS_OK:
-    st.info(
-        "ℹ️ **Calculated (from Excel)** mode requires Microsoft Excel on Windows and is not "
-        "available in this environment. Use **Estimated (×3 or ×5)** instead — all other "
-        "features work normally.",
-        icon=None,
-    )
 
 # ============================================================
 # CONSTANTS
@@ -221,122 +258,72 @@ def get_nutrient_names_from_bedarf(file_bytes: bytes, password: str = _VT_PASSWO
 
 
 # ============================================================
-# XLWINGS: write inputs → recalculate → read Bedarf L–BK
+# READ PATIENT PARAMETERS FROM EXCEL (openpyxl, cached values)
 # ============================================================
 
-def _build_identifier(animal: str, fall: str, diagnose) -> str:
-    diag = str(diagnose).strip() if diagnose is not None else "0"
-    return f"{animal} {fall} {diag}"
+def _parse_identifier(identifier: str) -> tuple:
+    """Parse 'Hund Erhaltung adult aktiv' → (animal, fall, diagnose).
+    Uses known fall options to split correctly."""
+    for animal in ["Hund", "Katze"]:
+        if not identifier.startswith(animal + " "):
+            continue
+        rest = identifier[len(animal) + 1:]
+        for fall in _FALL_OPTIONS.get(animal, []):
+            if rest.startswith(fall + " ") or rest == fall:
+                diagnose = rest[len(fall):].strip() or None
+                return animal, fall, diagnose
+        # fallback: split on first space
+        parts = rest.split(" ", 1)
+        return animal, parts[0], (parts[1].strip() if len(parts) > 1 else None)
+    return None, None, None
 
 
-def _col_letter(n: int) -> str:
-    """Convert 1-indexed column number to Excel column letter(s)."""
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
+@st.cache_data
+def read_patient_params_from_excel(file_bytes: bytes, password: str = _VT_PASSWORD) -> dict:
+    """Read patient parameters set by the student in the Berechnung sheet.
 
-
-def get_min_values_via_xlwings(
-    file_bytes: bytes,
-    password: str,
-    identifier: str,
-    weight: float,
-    nutrient_names: list,
-    welpen: Optional[int] = None,
-    lebenswoche: Optional[int] = None,
-    adult_weight: Optional[float] = None,
-) -> tuple:
-    """Open a temp copy in Excel, write inputs, recalculate, read Bedarf _min/_max columns.
-
-    Reads Bedarf row 1 to find each column by its _min/_max header — no hardcoded ranges.
-    Returns (mins_dict, maxs_dict). Original file is never modified (temp copy approach).
+    H11 = computed identifier string (animal + life stage + condition).
+    H12 = weight (kg).
+    H10 = Lebenswoche (Aufzucht only).
+    H14 = Welpen count (Laktation only).
+    H15 = adult weight (Aufzucht only).
+    Returns a dict with these values (None if not set / not applicable).
     """
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsm")
-    os.close(tmp_fd)
-    try:
-        with open(tmp_path, "wb") as f:
-            f.write(file_bytes)
+    buf = io.BytesIO(file_bytes)
+    office = msoffcrypto.OfficeFile(buf)
+    office.load_key(password=password)
+    dec = io.BytesIO()
+    office.decrypt(dec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(dec, keep_vba=True, data_only=True)
+    ws = wb["Berechnung"]
 
-        xl_app = xw.App(visible=False, add_book=False)
+    raw_id      = ws["H11"].value
+    raw_weight  = ws["H12"].value
+    raw_lw      = ws["H10"].value
+    raw_welpen  = ws["H14"].value
+    raw_adw     = ws["H15"].value
+
+    def _float(v):
         try:
-            wb = xl_app.books.open(tmp_path, password=password)
-            ws_b = wb.sheets["Berechnung"]
-
-            ws_b["H12"].value = weight
-            if welpen is not None:
-                ws_b["H14"].value = int(welpen)
-            if lebenswoche is not None:
-                ws_b["H10"].value = int(lebenswoche)
-            if adult_weight is not None:
-                ws_b["H15"].value = float(adult_weight)
-
-            xl_app.calculate()
-
-            ws_bedarf = wb.sheets["Bedarf"]
-
-            # ── Find target row by identifier in col A ────────────────────
-            col_a_vals = ws_bedarf.range("A2:A40").value
-            target_row = None
-            for i, val in enumerate(col_a_vals):
-                if val and str(val).strip() == identifier.strip():
-                    target_row = i + 2
-                    break
-            if target_row is None:
-                available = [str(v).strip() for v in col_a_vals if v]
-                raise ValueError(
-                    f"Identifier '{identifier}' not found in Bedarf sheet.\n"
-                    f"Available identifiers: {available}"
-                )
-
-            # ── Read header row to locate _min and _max columns by name ───
-            # Read row 1 up to col 220 — covers any plausible column position
-            SCAN_COLS = 220
-            header_vals = ws_bedarf.range(f"A1:{_col_letter(SCAN_COLS)}1").value or []
-            min_col: dict = {}   # nutrient_name → 1-indexed col number
-            max_col: dict = {}
-            for idx, hdr in enumerate(header_vals):
-                if hdr is None:
-                    continue
-                s = str(hdr).strip()
-                clean = re.sub(r"[_\s]*min\s*$", "", s, flags=re.IGNORECASE).strip()
-                if clean and clean != s:
-                    min_col[clean] = idx + 1
-                    continue
-                clean = re.sub(r"[_\s]*max\s*$", "", s, flags=re.IGNORECASE).strip()
-                if clean and clean != s:
-                    max_col[clean] = idx + 1
-
-            # ── Read the full target row once, then extract by column pos ─
-            row_vals = ws_bedarf.range(
-                f"A{target_row}:{_col_letter(SCAN_COLS)}{target_row}"
-            ).value or []
-
-            wb.api.Close(False)
-        finally:
-            try:
-                xl_app.quit()
-            except Exception:
-                pass
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-    def _extract(col_map: dict, name: str) -> float:
-        col = col_map.get(name)
-        v = row_vals[col - 1] if (col and col <= len(row_vals)) else None
-        try:
-            fv = float(v)
-            return 0.0 if math.isnan(fv) else fv
+            return float(v)
         except (TypeError, ValueError):
-            return 0.0
+            return None
 
-    mins = {name: _extract(min_col, name) for name in nutrient_names}
-    maxs = {name: _extract(max_col, name) for name in nutrient_names}
-    return mins, maxs
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "identifier":   str(raw_id).strip() if raw_id is not None else "",
+        "weight":       _float(raw_weight),
+        "lebenswoche":  _int(raw_lw),
+        "welpen":       _int(raw_welpen),
+        "adult_weight": _float(raw_adw),
+    }
 
 
 def get_min_values_via_openpyxl(
@@ -374,21 +361,43 @@ def get_min_values_via_openpyxl(
 
     min_col: dict = {}
     max_col: dict = {}
+    # Also build a map of abbreviated name → full Bedarf name for cols with no suffix
+    # (e.g. HilfstabelleMinMax uses "EPA + DHA" but Bedarf _min uses the full German name).
+    no_suffix: dict = {}   # abbreviated col-64–117 name → its 1-indexed column number
     for c in range(1, 221):
         hdr = ws.cell(row=1, column=c).value
         if hdr is None:
             continue
         s = str(hdr).strip()
-        clean = re.sub(r"[_\s]*min\s*$", "", s, flags=re.IGNORECASE).strip()
-        if clean and clean != s:
-            min_col[clean] = c
+        clean_min = re.sub(r"[_\s]*min\s*$", "", s, flags=re.IGNORECASE).strip()
+        if clean_min and clean_min != s:
+            min_col[clean_min] = c
             continue
-        clean = re.sub(r"[_\s]*max\s*$", "", s, flags=re.IGNORECASE).strip()
-        if clean and clean != s:
-            max_col[clean] = c
+        clean_max = re.sub(r"[_\s]*max\s*$", "", s, flags=re.IGNORECASE).strip()
+        if clean_max and clean_max != s:
+            max_col[clean_max] = c
+            continue
+        # No suffix — store as potential alias (cols 64-117 use abbreviated names)
+        no_suffix[s] = c
+
+    # Build alias: abbreviated name (from HilfstabelleMinMax) → full Bedarf _min name.
+    # Needed for nutrients like "EPA + DHA" whose full name differs between the two sheets.
+    # Strategy: for each no-suffix column, find the corresponding _min column by position
+    # (they are offset by exactly 52 columns: col N has _min at col N-52 and _max at N+52).
+    _NO_SUFFIX_OFFSET = 52   # cols 64-117 are 52 cols after the _min block (cols 12-63)
+    abbrev_to_full: dict = {}
+    for abbr, c_abbr in no_suffix.items():
+        c_min = c_abbr - _NO_SUFFIX_OFFSET
+        if c_min >= 12:
+            hdr_min = ws.cell(row=1, column=c_min).value
+            if hdr_min:
+                full = re.sub(r"[_\s]*min\s*$", "", str(hdr_min).strip(), flags=re.IGNORECASE).strip()
+                if full != abbr and full in min_col:
+                    abbrev_to_full[abbr] = full
 
     def _val(col_map, name):
-        c = col_map.get(name)
+        # Try direct match first, then alias lookup
+        c = col_map.get(name) or col_map.get(abbrev_to_full.get(name, ""))
         if c is None:
             return 0.0
         v = ws.cell(row=target_row, column=c).value
@@ -1011,6 +1020,7 @@ def _lookup_base_total(base_totals: dict, nutrient_name: str, ft_mapping: dict =
 # ============================================================
 # 2) UPLOAD & SELECTION SECTION
 # ============================================================
+st.markdown("<div style='margin-top:1.2rem;'></div>", unsafe_allow_html=True)
 st.markdown("### 📥 Upload Data & Select Nutrition Needs")
 
 constraints_raw      = None
@@ -1028,8 +1038,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
     # --------------------------------------------------------
     with left:
         with st.expander("Nutrition Requirements", expanded=True):
-            st.markdown("<div class='upload-title'>volle_Tabelle.xlsm</div>", unsafe_allow_html=True)
-            st.markdown("<div class='muted-hint'>Password-protected requirements file</div>", unsafe_allow_html=True)
+            st.markdown("<div class='upload-title' style='margin-bottom:0.6rem;'>CarniDiet© File</div>", unsafe_allow_html=True)
 
             vt_file = st.file_uploader(
                 "volle_Tabelle Upload", type=["xlsm", "xlsx"],
@@ -1041,98 +1050,180 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                     file_bytes = vt_file.read()
                     st.session_state["v3_file_bytes"] = file_bytes
 
+                    # Reset CarniDiet-specific state when a new file is uploaded.
+                    # Supplement database and base diet state are intentionally preserved.
+                    _new_hash = hashlib.md5(file_bytes).hexdigest()[:12]
+                    if st.session_state.get("v3_last_file_hash") != _new_hash:
+                        _carnidiet_keys = [
+                            "v3_ft_map", "v3_ft_map_sig", "v3_ft_map_status", "v3_ft_map_locked",
+                            "v3_constraints_raw", "v3_calc_sig", "v3_mins_dict", "v3_maxs_dict",
+                            "v3_nutrient_selection", "v3_max_method",
+                            "constraints_edit_df", "constraints_locked",
+                            "constraints_effective_df", "constraints_editor_nonce",
+                            "nutrient_mapping", "nutrient_mapping_status",
+                            "nutrient_mapping_mode", "nutrient_mapping_signature", "mapping_locked",
+                        ]
+                        for _k in _carnidiet_keys:
+                            st.session_state.pop(_k, None)
+                        st.session_state["v3_last_file_hash"] = _new_hash
+                        st.rerun()
+
                     nutrient_names = get_nutrient_names_from_bedarf(file_bytes)
-                    st.markdown("<div class='okrow'>✅ File loaded.</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='okrow'>✅ File loaded</div>", unsafe_allow_html=True)
 
-                    # ── Animal ────────────────────────────────────────
-                    st.markdown("#### 🐾 Animal")
-                    animal = st.selectbox(
-                        "Animal", options=["Hund", "Katze"],
-                        key="v3_animal", label_visibility="collapsed",
+                    # ── Info: parameters come from Excel ─────────────
+                    st.markdown(
+                        "<div style='margin-top:0.7rem;background:rgba(255,140,0,0.10);border:1.5px solid rgba(255,140,0,0.70);"
+                        "border-radius:0.5rem;padding:0.65rem 1rem;font-size:0.95rem;font-weight:600;"
+                        "color:#7a4400;margin-bottom:0.4rem;'>"
+                        "🔶 Key variables such as Spezies, Bedarf, Gewicht and their related inputs must be set directly "
+                        "in the CarniDiet© File before uploading. "
+                        "To change these settings, update them in Excel and re-upload the file."
+                        "</div>",
+                        unsafe_allow_html=True,
                     )
 
-                    # ── Life Stage ───────────────────────────────────
-                    st.markdown("#### 📋 Life Stage")
-                    fall_opts = _FALL_OPTIONS[animal]
-                    selected_fall = st.selectbox(
-                        "Life Stage", options=fall_opts,
-                        key="v3_fall", label_visibility="collapsed",
-                    )
+                    # ── Read parameters from the uploaded file ────────
+                    params = read_patient_params_from_excel(file_bytes)
+                    identifier = params["identifier"]
 
-                    # ── Condition ────────────────────────────────────
-                    diag_opts = _DIAGNOSE_OPTIONS.get((animal, selected_fall))
-                    selected_diagnose = None
-                    if diag_opts is not None:
-                        st.markdown("#### 🔎 Condition")
-                        selected_diagnose = st.selectbox(
-                            "Condition", options=diag_opts,
-                            key="v3_diagnose", label_visibility="collapsed",
+                    if not identifier:
+                        st.error(
+                            "❌ Could not read patient parameters from the file. "
+                            "Make sure you have set the parameters in Excel and saved the file before uploading."
                         )
+                        selected_nutrients = []
+                    else:
+                        animal, selected_fall, selected_diagnose = _parse_identifier(identifier)
+                        is_aufzucht  = (selected_fall == "Aufzucht")
+                        is_laktation = (selected_fall == "Laktation")
 
-                    # ── Inputs (context-dependent) ────────────────────
-                    is_aufzucht = selected_fall == "Aufzucht"
-                    is_laktation = selected_fall == "Laktation"
+                        # ── Read-only parameter display ───────────────
+                        st.markdown("#### 📋 Parameters (from file)")
+                        _param_rows = [
+                            ("🐾 Animal",      animal or "—"),
+                            ("📋 Life Stage",  selected_fall or "—"),
+                        ]
+                        if selected_diagnose and selected_diagnose.strip() not in ("0", ""):
+                            _param_rows.append(("🔎 Condition", selected_diagnose))
 
-                    weight_label = "#### 🐶 Puppy Weight (kg)" if is_aufzucht else "#### ⚖️ Weight (kg)"
-                    st.markdown(weight_label)
-                    user_weight = st.number_input(
-                        "Weight", min_value=0.1, max_value=200.0,
-                        value=4.0, step=0.05, format="%.2f",
-                        key="v3_weight", label_visibility="collapsed",
-                    )
+                        _wlabel = "🐶 Puppy Weight" if is_aufzucht else "⚖️ Weight"
+                        _wval   = f"{params['weight']:.2f} kg" if params["weight"] is not None else "—"
+                        _param_rows.append((_wlabel, _wval))
 
-                    welpen_input      = None
-                    lebenswoche_input = None
-                    adult_weight_input = None
+                        if is_aufzucht and params["lebenswoche"] is not None:
+                            _param_rows.append(("📅 Week of Life", str(params["lebenswoche"])))
+                        if is_aufzucht and params["adult_weight"] is not None:
+                            _param_rows.append(("⚖️ Adult Weight", f"{params['adult_weight']:.1f} kg"))
+                        if is_laktation and params["welpen"] is not None:
+                            _param_rows.append(("🐕 Puppies", str(params["welpen"])))
 
-                    if is_laktation:
-                        st.markdown("#### 🐕 Number of Puppies")
-                        welpen_input = st.number_input(
-                            "Number of Puppies", min_value=1, max_value=20, value=3, step=1,
-                            key="v3_welpen", label_visibility="collapsed",
+                        _param_html = (
+                            "<div style='background:rgba(28,131,225,0.08);border:1px solid "
+                            "rgba(28,131,225,0.25);border-radius:0.5rem;padding:0.6rem 1rem;"
+                            "font-size:0.95rem;margin-bottom:0.5rem;'>"
                         )
-
-                    if is_aufzucht:
-                        st.markdown("#### 📅 Week of Life")
-                        lebenswoche_input = st.number_input(
-                            "Week of Life", min_value=1, max_value=52, value=8, step=1,
-                            key="v3_lebenswoche", label_visibility="collapsed",
-                        )
-                        st.markdown("#### ⚖️ Adult Weight (kg)")
-                        adult_weight_input = st.number_input(
-                            "Adult Weight", min_value=0.5, max_value=200.0,
-                            value=20.0, step=1.0, format="%.0f",
-                            key="v3_adult_weight", label_visibility="collapsed",
-                        )
+                        for _lbl, _val in _param_rows:
+                            _param_html += (
+                                f"<div style='padding:0.18rem 0;'>"
+                                f"<span style='font-weight:600;color:#19425e;'>{_lbl}:</span>"
+                                f"&nbsp;{_val}</div>"
+                            )
+                        _param_html += "</div>"
+                        st.markdown(_param_html, unsafe_allow_html=True)
 
                     # ── Nutrient selection ────────────────────────────
+                    st.markdown("<div style='margin-top:1.1rem;'></div>", unsafe_allow_html=True)
                     st.markdown("#### 🧪 Which nutrients to include?")
                     st.markdown(
-                        "<div class='caption-note'>All 52 nutrients from the Bedarf sheet are available.</div>",
+                        "<div style='margin-top:-0.4rem;margin-bottom:0.5rem;"
+                        "font-size:0.9rem;opacity:0.75;'>All 52 nutrients from the Bedarf sheet are available.</div>",
                         unsafe_allow_html=True,
                     )
 
                     default_in_data = [n for n in nutrient_names if n in _DEFAULT_NUTRIENTS]
                     extra_in_data   = [n for n in nutrient_names if n not in _DEFAULT_NUTRIENTS]
+                    # Pull Pantothensäure out — rendered in its own row below the main grid.
+                    _panto = "Pantothensäure"
+                    _default_main = [n for n in default_in_data if n != _panto]
+                    _panto_present = _panto in default_in_data
 
                     if "v3_nutrient_selection" not in st.session_state:
                         st.session_state["v3_nutrient_selection"] = set(default_in_data)
 
                     sel = st.session_state["v3_nutrient_selection"]
-                    cols_per_row = 4
 
+                    # Normalise checkbox label font size across narrow (4-col) and
+                    # wider (3-col) grid sections so they look identical.
+                    st.markdown(
+                        "<style>"
+                        "div[data-testid='stCheckbox'] label p {"
+                        "  font-size: 1rem !important;"
+                        "}"
+                        "div[data-testid='stExpander'] summary span p {"
+                        "  font-size: 1.05rem !important;"
+                        "}"
+                        "</style>",
+                        unsafe_allow_html=True,
+                    )
                     with st.expander("Select nutrients (click to expand)", expanded=True):
-                        st.markdown("**Standard nutrients (default)**")
-                        for chunk in [default_in_data[i:i+cols_per_row] for i in range(0, len(default_in_data), cols_per_row)]:
-                            for col, n in zip(st.columns(len(chunk)), chunk):
+                        st.markdown(
+                            "<div style='font-size:1.05rem;font-weight:700;color:#19425e;"
+                            "margin-bottom:0.4rem;'>📌 Standard nutrients (default)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        # Render main grid 4 per row (always 4 cols so rows stay aligned).
+                        # Detect whether Pantothensäure can share the last row (needs 2 free slots).
+                        _chunks = [_default_main[i:i+4] for i in range(0, len(_default_main), 4)]
+                        _merge_panto = _panto_present and bool(_chunks) and len(_chunks[-1]) <= 2
+
+                        _render_chunks = _chunks[:-1] if _merge_panto else _chunks
+                        for chunk in _render_chunks:
+                            _cols = st.columns(4)
+                            for col, n in zip(_cols, chunk):
                                 checked = col.checkbox(n, value=(n in sel), key=f"v3_nut_{n}")
                                 if checked:
                                     sel.add(n)
                                 else:
                                     sel.discard(n)
+
+                        if _merge_panto:
+                            # Last row: remaining items (1–2) each get 1 unit; Pantothensäure gets 2
+                            _last = _chunks[-1]
+                            _widths = [1] * len(_last) + [2]
+                            _cols = st.columns(_widths)
+                            for col, n in zip(_cols, _last):
+                                checked = col.checkbox(n, value=(n in sel), key=f"v3_nut_{n}")
+                                if checked:
+                                    sel.add(n)
+                                else:
+                                    sel.discard(n)
+                            checked = _cols[len(_last)].checkbox(
+                                _panto, value=(_panto in sel), key=f"v3_nut_{_panto}"
+                            )
+                            if checked:
+                                sel.add(_panto)
+                            else:
+                                sel.discard(_panto)
+                        elif _panto_present:
+                            # No room on last row — own full-width row
+                            checked = st.checkbox(
+                                _panto, value=(_panto in sel), key=f"v3_nut_{_panto}"
+                            )
+                            if checked:
+                                sel.add(_panto)
+                            else:
+                                sel.discard(_panto)
+
                         if extra_in_data:
-                            st.markdown("**Additional nutrients**")
-                            for chunk in [extra_in_data[i:i+cols_per_row] for i in range(0, len(extra_in_data), cols_per_row)]:
+                            st.markdown(
+                                "<hr style='border:0;border-top:1px solid rgba(49,51,63,0.15);"
+                                "margin:0.8rem 0 0.6rem 0;'>"
+                                "<div style='font-size:1.05rem;font-weight:700;color:#19425e;"
+                                "margin-bottom:0.4rem;'>➕ Additional nutrients</div>",
+                                unsafe_allow_html=True,
+                            )
+                            for chunk in [extra_in_data[i:i+3] for i in range(0, len(extra_in_data), 3)]:
                                 for col, n in zip(st.columns(len(chunk)), chunk):
                                     checked = col.checkbox(n, value=(n in sel), key=f"v3_nut_{n}")
                                     if checked:
@@ -1247,59 +1338,29 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
 
                         # ── Max method ───────────────────────────────
                         st.markdown("#### 📊 Maximum value method")
-                        _max_options = ["Estimated (×3 or ×5)", "Calculated (from Excel)"]
                         max_method = st.radio(
                             "Maximum value method",
-                            _max_options,
+                            ["Estimated (×3 or ×5)", "From Excel (cached)"],
                             horizontal=True,
                             key="v3_max_method",
                             label_visibility="collapsed",
-                            disabled=not _XLWINGS_OK,
                         )
-                        use_calc_max = _XLWINGS_OK and (max_method == "Calculated (from Excel)")
+                        use_calc_max = (max_method == "From Excel (cached)")
 
                         # ── Calculate Requirements button ─────────────
-                        identifier = _build_identifier(animal, selected_fall, selected_diagnose)
-                        calc_sig = (
-                            identifier,
-                            round(user_weight, 3),
-                            welpen_input,
-                            lebenswoche_input,
-                            round(adult_weight_input, 3) if adult_weight_input else None,
-                            tuple(selected_nutrients),
-                            use_calc_max,
-                        )
-
-                        if not _XLWINGS_OK:
-                            st.info(
-                                "ℹ️ Running in cloud mode — requirements are read from the "
-                                "cached values in the uploaded Excel file (weight field is ignored). "
-                                "For weight-adjusted results, set the correct weight in Excel before "
-                                "uploading, or run the app locally on Windows.",
-                            )
+                        _file_hash = hashlib.md5(file_bytes).hexdigest()[:12]
+                        calc_sig = (identifier, tuple(selected_nutrients), use_calc_max, _file_hash)
 
                         if st.button("🔢 Calculate Requirements", type="secondary", key="v3_calc_btn",
-                                     disabled=bool(_ft_truly_missing) or not _ft_map_locked):
+                                     disabled=bool(_ft_truly_missing) or not _ft_map_locked or not identifier):
                             with st.spinner("Reading requirements…"):
                                 try:
-                                    if _XLWINGS_OK:
-                                        mins_dict, maxs_dict = get_min_values_via_xlwings(
-                                            file_bytes=file_bytes,
-                                            password=_VT_PASSWORD,
-                                            identifier=identifier,
-                                            weight=user_weight,
-                                            nutrient_names=nutrient_names,
-                                            welpen=welpen_input,
-                                            lebenswoche=lebenswoche_input,
-                                            adult_weight=adult_weight_input,
-                                        )
-                                    else:
-                                        mins_dict, maxs_dict = get_min_values_via_openpyxl(
-                                            file_bytes=file_bytes,
-                                            password=_VT_PASSWORD,
-                                            identifier=identifier,
-                                            nutrient_names=nutrient_names,
-                                        )
+                                    mins_dict, maxs_dict = get_min_values_via_openpyxl(
+                                        file_bytes=file_bytes,
+                                        password=_VT_PASSWORD,
+                                        identifier=identifier,
+                                        nutrient_names=nutrient_names,
+                                    )
                                     constraints_raw = build_constraints_from_mins(
                                         mins_dict, selected_nutrients,
                                         maxs_dict=maxs_dict, use_calculated_max=use_calc_max,
@@ -1318,117 +1379,112 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                     st.session_state["nutrient_mapping_mode"]   = None
                                     st.session_state["nutrient_mapping_signature"] = None
                                     st.session_state["mapping_locked"]          = False
-                                    st.success(f"✅ Requirements calculated for: **{identifier}**")
+                                    _wt = f" | Weight: {params['weight']:.2f} kg" if params.get("weight") else ""
+                                    st.success(f"✅ Requirements loaded for: **{identifier}**{_wt}")
                                 except Exception as e:
-                                    st.error(f"❌ Excel calculation failed: {e}")
+                                    st.error(f"❌ Failed to read requirements: {e}")
 
                         elif st.session_state.get("v3_calc_sig") == calc_sig:
                             constraints_raw = st.session_state.get("v3_constraints_raw")
 
-                        # ── Editable nutrient table ───────────────────
+                        # ── Nutrient Intervals: read-only table + edit panel ──
                         if "constraints_edit_df" in st.session_state and constraints_raw is not None:
-                            st.markdown("#### 🧾 Nutrient Intervals – View & Edit")
-                            st.markdown(
-                                "<div class='caption-note'>Min/Max/Base are editable. "
-                                "Fix intervals to enable optimization.</div>",
-                                unsafe_allow_html=True,
-                            )
-
-                            locked     = bool(st.session_state.get("constraints_locked", False))
-                            editor_key = f"constraints_editor_{st.session_state.get('constraints_editor_nonce', 0)}"
-                            display_cols = [
-                                "Nährstoff", "Tagesbedarf (Min)", "Maximalwert (Max)", "🗑 Löschen",
-                            ]
+                            st.markdown("#### 🧾 Nutrient Intervals")
+                            locked   = bool(st.session_state.get("constraints_locked", False))
                             _nu_intv = get_futtermittel_nutrient_units(file_bytes)
-                            _intv_view = st.session_state["constraints_edit_df"][display_cols].copy()
-                            _intv_view.insert(
-                                1, "Unit",
-                                _intv_view["Nährstoff"].map(lambda n: _nu_intv.get(str(n).strip(), "")),
-                            )
-                            edited_display = st.data_editor(
+                            _cdf_now = st.session_state["constraints_edit_df"]
+
+                            # Validate intervals
+                            _min_s = pd.to_numeric(_cdf_now["Tagesbedarf (Min)"], errors="coerce").fillna(0.0)
+                            _max_s = pd.to_numeric(_cdf_now["Maximalwert (Max)"], errors="coerce")
+                            err_min_gt_max = _max_s.notna() & (_min_s > _max_s)
+                            has_interval_errors = bool(err_min_gt_max.any())
+
+                            # ── Read-only overview table ──────────────
+                            _intv_view = pd.DataFrame({
+                                "Nutrient": _cdf_now["Nährstoff"].astype(str).str.strip(),
+                                "Unit":     _cdf_now["Nährstoff"].map(lambda n: _nu_intv.get(str(n).strip(), "")),
+                                "Min":      _min_s.round(4),
+                                "Max":      _max_s.round(4),
+                            })
+                            st.dataframe(
                                 _intv_view,
-                                key=editor_key,
                                 use_container_width=True,
-                                num_rows="fixed",
                                 hide_index=True,
-                                disabled=True if locked else ["Unit"],
                                 column_config={
-                                    "Nährstoff":             st.column_config.TextColumn("Nutrient"),
-                                    "Unit":                  st.column_config.TextColumn("Unit", width="small"),
-                                    "Tagesbedarf (Min)":     st.column_config.NumberColumn("Requirement (Min)", format="%.2f"),
-                                    "Maximalwert (Max)":     st.column_config.NumberColumn("Requirement (Max)", format="%.2f"),
-                                    "🗑 Löschen":            st.column_config.CheckboxColumn("🗑 Delete"),
+                                    "Nutrient": st.column_config.TextColumn("Nutrient", width="medium"),
+                                    "Unit":     st.column_config.TextColumn("Unit", width="small"),
+                                    "Min":      st.column_config.NumberColumn("Min", format="%.4g", width="small"),
+                                    "Max":      st.column_config.NumberColumn("Max", format="%.4g", width="small"),
                                 },
                             )
 
-                            edited = st.session_state["constraints_edit_df"].copy()
-                            for c in display_cols:
-                                edited[c] = edited_display[c]
-                            edited["Nährstoff"]          = edited["Nährstoff"].astype(str).str.strip()
-                            edited["Tagesbedarf (Min)"]  = pd.to_numeric(edited["Tagesbedarf (Min)"],  errors="coerce").fillna(0.0)
-                            edited["Grundnahrung"]        = pd.to_numeric(edited["Grundnahrung"],        errors="coerce").fillna(0.0)
-                            edited["Maximalwert (Max)"]  = pd.to_numeric(edited["Maximalwert (Max)"],  errors="coerce")
-                            edited["Bedarf nach Grundnahrung (Min-Base)"] = (
-                                edited["Tagesbedarf (Min)"] - edited["Grundnahrung"]
-                            ).clip(lower=0.0)
-                            edited["🗑 Löschen"] = edited.get("🗑 Löschen", False).fillna(False).astype(bool)
-
-                            max_present    = edited["Maximalwert (Max)"].notna()
-                            err_min_gt_max = max_present & (edited["Tagesbedarf (Min)"] > edited["Maximalwert (Max)"])
-
-                            edited["⚠️ Fehler"] = [
-                                "Min > Max" if bool(err_min_gt_max.iloc[i]) else ""
-                                for i in range(len(edited))
-                            ]
-                            st.session_state["constraints_edit_df"] = edited
-
-                            has_interval_errors = bool(err_min_gt_max.any())
                             if has_interval_errors:
-                                bad = edited.loc[
-                                    err_min_gt_max,
-                                    ["Nährstoff", "Tagesbedarf (Min)", "Maximalwert (Max)", "⚠️ Fehler"]
-                                ]
-                                st.error("❌ Invalid intervals. Fix before locking.")
-                                with st.expander(f"Show details ({len(bad)} rows)"):
-                                    st.dataframe(bad, use_container_width=True, hide_index=True)
+                                st.error("❌ Invalid intervals (Min > Max). Fix before locking.")
 
-                            st.markdown("<div class='nutrient-actions'>", unsafe_allow_html=True)
-                            a1, a2 = st.columns([1, 1])
+                            # ── Edit a nutrient ───────────────────────
+                            with st.expander("✏️ Edit a nutrient", expanded=False):
+                                _nut_names = _cdf_now["Nährstoff"].astype(str).str.strip().tolist()
+                                _edit_sel = st.selectbox(
+                                    "Select nutrient to edit", options=_nut_names,
+                                    key="v3_edit_sel", disabled=locked,
+                                )
+                                if _edit_sel:
+                                    _ei = _cdf_now[_cdf_now["Nährstoff"].astype(str).str.strip() == _edit_sel].index
+                                    if len(_ei):
+                                        _ei = _ei[0]
+                                        _cur_min = float(_cdf_now.at[_ei, "Tagesbedarf (Min)"] or 0.0)
+                                        _cur_max = _cdf_now.at[_ei, "Maximalwert (Max)"]
+                                        _cur_max_f = float(_cur_max) if pd.notna(_cur_max) else 0.0
+                                        ec1, ec2 = st.columns(2)
+                                        with ec1:
+                                            _new_min = st.number_input(
+                                                "Min", value=_cur_min, step=0.01, format="%.4f",
+                                                key=f"v3_edit_min_{_edit_sel}", disabled=locked,
+                                            )
+                                        with ec2:
+                                            _new_max = st.number_input(
+                                                "Max (0 = no max)", value=_cur_max_f, step=0.01, format="%.4f",
+                                                key=f"v3_edit_max_{_edit_sel}", disabled=locked,
+                                            )
+                                        if st.button("💾 Update", type="secondary", key="v3_edit_upd_btn", disabled=locked):
+                                            if _new_max > 0 and _new_min > _new_max:
+                                                st.error("❌ Min must not exceed Max.")
+                                            else:
+                                                _df_upd = st.session_state["constraints_edit_df"].copy()
+                                                _df_upd.at[_ei, "Tagesbedarf (Min)"] = float(_new_min)
+                                                _df_upd.at[_ei, "Maximalwert (Max)"] = float(_new_max) if _new_max > 0 else np.nan
+                                                _df_upd.at[_ei, "Bedarf nach Grundnahrung (Min-Base)"] = max(
+                                                    0.0, float(_new_min) - float(_df_upd.at[_ei, "Grundnahrung"] or 0.0)
+                                                )
+                                                st.session_state["constraints_edit_df"] = _df_upd
+                                                st.session_state["nutrient_mapping"] = None
+                                                st.session_state["mapping_locked"]  = False
+                                                st.success(f"✅ '{_edit_sel}' updated.")
+                                                st.rerun()
 
-                            with a1:
-                                if st.button("🗑 Delete selected rows", type="secondary",
-                                             key="v3_delete_rows_btn", disabled=locked):
-                                    df_now = st.session_state["constraints_edit_df"].copy()
-                                    to_del = df_now["🗑 Löschen"].fillna(False).astype(bool)
-                                    if to_del.any():
-                                        df_now = df_now.loc[~to_del].reset_index(drop=True)
-                                        df_now["🗑 Löschen"] = False
-                                        df_now["⚠️ Fehler"]  = df_now.get("⚠️ Fehler", "").fillna("")
-                                        st.session_state["constraints_edit_df"] = df_now
-                                        st.session_state["constraints_editor_nonce"] = \
-                                            st.session_state.get("constraints_editor_nonce", 0) + 1
-                                        st.session_state["nutrient_mapping"] = None
-                                        st.session_state["mapping_locked"]  = False
-                                        st.success(f"{int(to_del.sum())} row(s) deleted.")
-                                        st.rerun()
-                                    else:
-                                        st.info("No rows selected.")
-
-                            with a2:
-                                if st.button("↩️ Reset changes", type="secondary",
-                                             key="v3_reset_btn", disabled=locked):
-                                    cr = st.session_state.get("v3_constraints_raw")
-                                    if cr is not None:
-                                        st.session_state["constraints_edit_df"] = constraints_to_edit_df(cr).copy()
-                                    st.session_state["constraints_locked"]      = False
-                                    st.session_state["constraints_effective_df"] = None
-                                    st.session_state["constraints_editor_nonce"] = \
-                                        st.session_state.get("constraints_editor_nonce", 0) + 1
+                            # ── Delete nutrients ──────────────────────
+                            with st.expander("🗑️ Delete nutrients", expanded=False):
+                                _del_opts = _cdf_now["Nährstoff"].astype(str).str.strip().tolist()
+                                _del_sel  = st.multiselect(
+                                    "Select nutrients to delete", options=_del_opts,
+                                    key="v3_del_ms", placeholder="Search and select…",
+                                    disabled=locked,
+                                )
+                                if _del_sel:
+                                    st.warning(f"⚠️ {len(_del_sel)} nutrient(s) selected for deletion.")
+                                if st.button("🗑 Delete selected", type="secondary",
+                                             key="v3_delete_rows_btn", disabled=locked or not _del_sel):
+                                    _df_del = st.session_state["constraints_edit_df"].copy()
+                                    _df_del = _df_del[~_df_del["Nährstoff"].astype(str).str.strip().isin(set(_del_sel))]
+                                    _df_del = _df_del.reset_index(drop=True)
+                                    st.session_state["constraints_edit_df"] = _df_del
                                     st.session_state["nutrient_mapping"] = None
                                     st.session_state["mapping_locked"]  = False
-                                    st.success("Everything reset.")
+                                    st.success(f"✅ {len(_del_sel)} nutrient(s) deleted.")
                                     st.rerun()
 
+                            # ── Add new nutrient ──────────────────────
                             with st.expander("➕ Add new nutrient", expanded=False):
                                 add_c1, add_c2, add_c3 = st.columns([2.2, 1.2, 1.2])
                                 with add_c1:
@@ -1460,54 +1516,38 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
                                             st.session_state["constraints_edit_df"] = pd.concat(
                                                 [st.session_state["constraints_edit_df"], new_row], ignore_index=True
                                             )
-                                            st.session_state["constraints_editor_nonce"] = \
-                                                st.session_state.get("constraints_editor_nonce", 0) + 1
                                             st.session_state["nutrient_mapping"] = None
                                             st.session_state["mapping_locked"]  = False
-                                            st.success(f"'{nc}' added.")
+                                            st.success(f"✅ '{nc}' added.")
                                             st.rerun()
 
-                            st.markdown("<hr class='thin-sep'/>", unsafe_allow_html=True)
-                            st.checkbox(
-                                "🔏 Fix nutrient intervals",
-                                value=st.session_state.get("constraints_locked", False),
-                                key="constraints_locked",
+                            # ── Reset + Lock ──────────────────────────
+                            if st.button("↩️ Reset all changes", type="secondary", key="v3_reset_btn", disabled=locked):
+                                cr = st.session_state.get("v3_constraints_raw")
+                                if cr is not None:
+                                    st.session_state["constraints_edit_df"] = constraints_to_edit_df(cr).copy()
+                                st.session_state["constraints_locked"]       = False
+                                st.session_state["constraints_effective_df"] = None
+                                st.session_state["nutrient_mapping"]         = None
+                                st.session_state["mapping_locked"]           = False
+                                st.success("Reset.")
+                                st.rerun()
+                            st.markdown(
+                                "<hr style='border:0;border-top:1px solid rgba(49,51,63,0.22);"
+                                "margin:0 0 0.6rem 0;padding:0;'/>",
+                                unsafe_allow_html=True,
                             )
-                            st.markdown("</div>", unsafe_allow_html=True)
-
-                            # ── DEBUG: calculation trace ─────────────
-                            if st.session_state.get("v3_mins_dict"):
-                                mins_dict_dbg = st.session_state["v3_mins_dict"]
-                                maxs_dict_dbg = st.session_state.get("v3_maxs_dict", {})
-                                with st.expander("🔬 DEBUG: Min/Max values read from Excel", expanded=False):
-                                    st.markdown(f"**Identifier used:** `{identifier}`")
-                                    st.markdown(f"**Weight written to H12:** `{user_weight}` kg")
-                                    if welpen_input:      st.markdown(f"**Welpen (H14):** `{welpen_input}`")
-                                    if lebenswoche_input: st.markdown(f"**Lebenswoche (H10):** `{lebenswoche_input}`")
-                                    if adult_weight_input: st.markdown(f"**Gewicht Adult (H15):** `{adult_weight_input}` kg")
-                                    st.markdown(f"**Max method:** {max_method}")
-                                    dbg_rows = []
-                                    for n in selected_nutrients:
-                                        mn = float(mins_dict_dbg.get(n, 0.0) or 0.0)
-                                        if use_calc_max:
-                                            raw_mx = maxs_dict_dbg.get(n, None)
-                                            try:
-                                                mx = float(raw_mx)
-                                                if math.isnan(mx) or mx <= 0: mx = float("nan")
-                                            except (TypeError, ValueError):
-                                                mx = float("nan")
-                                            mx_label = "from Excel"
-                                        else:
-                                            mf = 3.0 if n in _NUTRIENTS_MAX3 else 5.0
-                                            mx = mn * mf if mn > 0 else float("nan")
-                                            mx_label = f"×{int(mf)}"
-                                        dbg_rows.append({
-                                            "Nutrient": n,
-                                            "Min (from Excel)": round(mn, 6),
-                                            "Max source": mx_label,
-                                            "Max": round(mx, 6) if not math.isnan(mx) else "—",
-                                        })
-                                    st.dataframe(pd.DataFrame(dbg_rows), use_container_width=True, hide_index=True)
+                            _is_locked = st.session_state.get("constraints_locked", False)
+                            _, _fix_col, _ = st.columns([1, 2, 1])
+                            with _fix_col:
+                                if st.button(
+                                    "🔓 Unlock intervals" if _is_locked else "🔏 Fix nutrient intervals",
+                                    type="secondary",
+                                    key="v3_fix_ni_btn",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state["constraints_locked"] = not _is_locked
+                                    st.rerun()
 
                             if st.session_state.get("constraints_locked", False):
                                 if has_interval_errors:
@@ -1551,8 +1591,7 @@ with st.expander("📥 Upload Data & Select Nutrition Needs (expand)", expanded=
     # --------------------------------------------------------
     with right:
         with st.expander("Supplement Database", expanded=True):
-            st.markdown("<div class='upload-title'>Supplement database</div>", unsafe_allow_html=True)
-            st.markdown("<div class='muted-hint'>(e.g. Database Supplemente.xlsx)</div>", unsafe_allow_html=True)
+            st.markdown("<div class='upload-title' style='margin-bottom:0.6rem;'>Supplement database</div>", unsafe_allow_html=True)
 
             supp_file = st.file_uploader(
                 "Supplement DB Upload", type="xlsx",
@@ -1665,7 +1704,7 @@ st.markdown("### 🥩 Base Diet")
 with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
     _fb = st.session_state.get("v3_file_bytes")
     if not _fb:
-        st.info("⬆️ Upload volle_Tabelle.xlsm first to enable base diet selection.")
+        st.info("⬆️ Upload CarniDiet© file first to enable base diet selection.")
     else:
         _fdf = parse_futtermittel_sheet(_fb)
         if _fdf.empty:
@@ -2006,7 +2045,7 @@ with st.expander("🥩 Base Diet Selection (expand)", expanded=True):
                             "Base Diet": st.column_config.NumberColumn(format="%.2f", width="small"),
                             "Max":       st.column_config.NumberColumn(format="%.2f", width="small"),
                             "% of Min":  st.column_config.ProgressColumn(
-                                "Coverage (% of Min)", min_value=0, max_value=100, format="%.0f%%",
+                                "Coverage Requirements (%)", min_value=0, max_value=100, format="%.0f%%",
                             ),
                             "Status":    st.column_config.TextColumn(width="small"),
                         },
